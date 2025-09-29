@@ -11,10 +11,10 @@ jobs:
 
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4   # ✅ última versión
 
     - name: Configurar Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5   # ✅ última versión
       with:
         python-version: '3.11'
 
@@ -25,13 +25,14 @@ jobs:
 
     - name: Generar PDFs tipo cómic
       env:
-        HF_TOKEN: ${{ secrets.HF_TOKEN }}   # 🔒 Secreto con tu token de Hugging Face
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}   # 🔒 Token de Hugging Face
       run: |
         python generar_pdf_top_hf_subcarpetas.py
 
     - name: Guardar PDFs como artefactos
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4   # ✅ corregido, no más error
       with:
         name: pdfs-comic
         path: |
           pdfs_generados/**/*.pdf   # Recoge todos los PDFs generados en subcarpetas
+
