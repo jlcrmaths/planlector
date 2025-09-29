@@ -30,11 +30,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Instalar fuente DejaVu Sans (Unicode)
+      - name: Instalar fuentes (DejaVu + Noto extra)
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-dejavu-core
-          ls -l /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf || true
+          sudo apt-get install -y fonts-dejavu-core fonts-noto-core fonts-noto-extra
+          fc-list | grep -i -E 'DejaVuSans|Noto' || true
 
       - name: Detectar archivos .md cambiados (JSON)
         id: changed
@@ -55,29 +55,19 @@ jobs:
           script: |
             const fs = require('fs');
             const changedCount = Number(process.env.CHANGED_COUNT || '0');
-            if (!process.env.CHANGED_JSON || !changedCount) {
-              core.setOutput('mode', 'all');
-              return;
-            }
+            if (!process.env.CHANGED_JSON || !changedCount) { core.setOutput('mode','all'); return; }
             let files = [];
-            try {
-              files = JSON.parse(process.env.CHANGED_JSON || '[]');
-            } catch (e) {
-              files = [];
-            }
+            try { files = JSON.parse(process.env.CHANGED_JSON || '[]'); } catch {}
             const mds = files.filter(p => p.toLowerCase().endsWith('.md') && p.startsWith('historias/'));
-            if (mds.length) {
-              fs.writeFileSync('changed_list.txt', mds.join('\n'), {encoding: 'utf8'});
-              core.setOutput('mode', 'list');
-            } else {
-              core.setOutput('mode', 'all');
-            }
+            if (mds.length) { fs.writeFileSync('changed_list.txt', mds.join('\n')); core.setOutput('mode','list'); }
+            else { core.setOutput('mode','all'); }
 
       - name: Generar PDFs (solo cambiados)
         if: steps.prep.outputs.mode == 'list'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}   # ← tu secret
-          FAST_MODE: '0'                      # 0=imágenes reales (API); 1=placeholders
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_MODEL_ID: runwayml/stable-diffusion-v1-5
+          FAST_MODE: '0'  # 0=imágenes reales (API); 1=placeholders
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
         run: |
           mkdir -p pdfs_generados
@@ -88,8 +78,9 @@ jobs:
       - name: Generar PDFs (todo historias/)
         if: steps.prep.outputs.mode != 'list'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}   # ← tu secret
-          FAST_MODE: '0'                      # 0=imágenes reales (API); 1=placeholders
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_MODEL_ID: runwayml/stable-diffusion-v1-5
+          FAST_MODE: '0'
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
         run: |
           mkdir -p pdfs_generados
@@ -115,6 +106,5 @@ jobs:
             pdfs_generados/*.pdf
             pdfs_generados/**/*.pdf
           if-no-files-found: error
-
 
 
