@@ -191,9 +191,12 @@ class ComicPDF(FPDF):
     def use_font(self, style: str = "", size: int = 12):
         if self._font_family.lower() == "dejavu":
             up = "".join(sorted(set(style.upper())))
-            if up == "BI" and self._has_bi: self.set_font("DejaVu", style="BI", size=size); return
-            if up == "B"  and self._has_b:  self.set_font("DejaVu", style="B",  size=size); return
-            if up == "I"  and self._has_i:  self.set_font("DejaVu", style="I",  size=size); return
+            if up == "BI" and self._has_bi:
+                self.set_font("DejaVu", style="BI", size=size); return
+            if up == "B"  and self._has_b:
+                self.set_font("DejaVu", style="B",  size=size); return
+            if up == "I"  and self._has_i:
+                self.set_font("DejaVu", style="I",  size=size); return
             self.set_font("DejaVu", style="", size=size)
         else:
             self.set_font(self._font_family, style="", size=size)
@@ -209,6 +212,7 @@ class ComicPDF(FPDF):
         self.set_y(-15)
         self.use_font(size=10)
         self.set_text_color(120, 120, 120)
+               # centrado
         self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
     def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float) -> Tuple[str, float]:
@@ -235,7 +239,9 @@ class ComicPDF(FPDF):
             text_w = usable_w
             img_w_mm = 0.0
 
-        lines = self.multi_cell(text_w if img_w_mm>0 else usable_w, line_h, text, align='J', split_only=True)
+        # fpdf2 >= 2.7: split_only devuelve las líneas para medir altura
+        lines = self.multi_cell(text_w if img_w_mm > 0 else usable_w,
+                                line_h, text, align='J', split_only=True)
         text_h = len(lines) * line_h
 
         y_start = self.get_y()
@@ -258,8 +264,10 @@ class ComicPDF(FPDF):
                 x_img = l
                 x_text = l + img_w_mm + gutter_mm
             self.image(img_path, x=x_img, y=y_start, w=img_w_mm)
-            try: os.remove(img_path)
-            except Exception: pass
+            try:
+                os.remove(img_path)
+            except Exception:
+                pass
         else:
             x_text = l
             text_w = usable_w
@@ -273,7 +281,8 @@ class ComicPDF(FPDF):
 # --------------------------
 # Generador principal
 # --------------------------
-def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: ImageGen, font_path: Optional[str]):
+def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
+                      gen: ImageGen, font_path: Optional[str]):
     with open(md_path, "r", encoding="utf-8") as f:
         text = f.read()
 
@@ -282,7 +291,8 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
     title = title_h1 or filename_title
 
     # Portada
-    portada_prompt = f"Portada educativa estilo cómic, limpia, con símbolos numéricos sutiles, sin texto sobreimpreso. Título: {title}"
+    portada_prompt = ("Portada educativa estilo cómic, limpia, con símbolos numéricos sutiles, "
+                      "sin texto sobreimpreso. Título: " + title)
     cover_img = gen.generate(portada_prompt, width=1280, height=720)
 
     pdf = ComicPDF(font_path=font_path)
@@ -292,8 +302,10 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
     pdf.add_page()
     path_tmp, h_mm = pdf._pil_to_temp_jpg(cover_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
     pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
-    try: os.remove(path_tmp)
-    except Exception: pass
+    try:
+        os.remove(path_tmp)
+    except Exception:
+        pass
     pdf.ln(5)
     pdf.header_title(title)
 
@@ -307,8 +319,9 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
     for b in blocks:
         if b.type.startswith("h"):
             level = int(b.type[1])
+            # Saltar el H2 "Actividades" en el cuerpo; va en página propia
             if level == 2 and b.text.strip().lower() == "actividades":
-                continue  # H2 "Actividades" va en su propia página
+                continue
             if level == 2:
                 pdf.use_font(style="B", size=16)
                 pdf.set_text_color(200, 30, 30)
@@ -363,7 +376,9 @@ def listar_md(input_folder: str) -> List[str]:
     return sorted(out)
 
 def main():
-    parser = argparse.ArgumentParser(description="Genera PDFs tipo cómic a partir de Markdown con imágenes integradas")
+    parser = argparse.ArgumentParser(
+        description="Genera PDFs tipo cómic a partir de Markdown con imágenes integradas"
+    )
     parser.add_argument("--input-folder", default="historias", help="Carpeta base de entrada")
     parser.add_argument("--output-folder", default="pdfs_generados", help="Carpeta base de salida")
     parser.add_argument("--list-file", help="Ruta a un fichero con rutas .md (una por línea)")
@@ -397,4 +412,4 @@ def main():
             print(f"❌ Error procesando {md}: {e}")
 
 if __name__ == "__main__":
-
+    main()
