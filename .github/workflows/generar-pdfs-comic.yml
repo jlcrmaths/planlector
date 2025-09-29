@@ -12,7 +12,7 @@ on:
 jobs:
   generar_pdfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -36,32 +36,54 @@ jobs:
           sudo apt-get install -y fonts-dejavu-core
           ls -l /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf || true
 
-      - name: Detectar archivos .md cambiados
+      - name: Detectar archivos .md cambiados (JSON seguro para espacios)
         id: changed
         uses: tj-actions/changed-files@v45
         with:
           files: |
             historias/*.md
             historias/**/*.md
-          separator: " "
+          json: "true"
 
-      - name: Generar PDFs con imágenes reales integradas
+      - name: Preparar lista de archivos a procesar
+        id: prep
+        run: |
+          # Si no hay JSON de cambios o está vacío, dejamos que el script procese toda la carpeta
+          if [ -z '${{ steps.changed.outputs.all_changed_files_json }}' ] || [ '${{ steps.changed.outputs.all_changed_files_count }}' = '0' ]; then
+            echo "mode=all" >> $GITHUB_OUTPUT
+          else
+            echo '${{ steps.changed.outputs.all_changed_files_json }}' > changed.json
+            # Extraemos solo .md bajo 'historias/' a un txt (una ruta por línea), manteniendo espacios
+            python - << 'PY'
+import json, sys
+data = json.load(open('changed.json'))
+mds = [p for p in data if p.lower().endswith('.md') and p.startswith('historias/')]
+open('changed_list.txt','w',encoding='utf-8').write("\n".join(mds))
+print(f"MD cambiados: {len(mds)}", file=sys.stderr)
+PY
+            if [ -s changed_list.txt ]; then
+              echo "mode=list" >> $GITHUB_OUTPUT
+            else
+              echo "mode=all" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Generar PDFs con imágenes integradas
         env:
-          # 👉 Pon este secret en tu repo: Settings > Secrets and variables > Actions > New repository secret
-          HF_API_TOKEN: ${{ secrets.HF_TOKEN }}
-          FAST_MODE: '0'  # 0 = imágenes reales por API; 1 = placeholders rápidos
+          # 👉 Usa tu secret existente
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # 0 = imágenes reales por API; 1 = placeholders rápidos (sin llamadas a API)
+          FAST_MODE: '0'
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
         run: |
           mkdir -p pdfs_generados
-          CHANGED="${{ steps.changed.outputs.all_changed_files }}"
-          echo "Archivos MD cambiados: '$CHANGED'"
-          if [ -z "$CHANGED" ]; then
+          if [ '${{ steps.prep.outputs.mode }}' = 'list' ]; then
+            echo "Procesando solo los MD cambiados:"
+            cat changed_list.txt
+            python scripts/generar_pdfs_comic.py --output-folder pdfs_generados --list-file changed_list.txt
+          else
             echo "Sin lista de cambios; procesando todo 'historias/'"
             python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
-          else
-            echo "Procesando archivos modificados:"
-            echo "$CHANGED"
-            python scripts/generar_pdfs_comic.py --output-folder pdfs_generados $CHANGED
           fi
 
       - name: Listar PDFs generados
@@ -82,6 +104,6 @@ jobs:
           path: |
             pdfs_generados/*.pdf
             pdfs_generados/**/*.pdf
-          if-no-files-found: error
+
 
 
