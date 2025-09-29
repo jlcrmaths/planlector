@@ -6,7 +6,6 @@ import re
 import sys
 import io
 import time
-import math
 import argparse
 import textwrap
 import tempfile
@@ -108,34 +107,32 @@ def make_placeholder(prompt: str, size=(768, 480), bg=(236, 239, 244), fg=(38, 5
     return img
 
 # --------------------------
-# Generación de imágenes (HF API)
+# Generación de imágenes (API de Hugging Face)
 # --------------------------
 class ImageGen:
     def __init__(self, fast_mode: bool, font_path: Optional[str]=None):
         self.fast_mode = fast_mode
         self.font_path = font_path
+        # 👉 Usamos tu secret HF_TOKEN
         self.hf_api_token = os.getenv("HF_TOKEN")
+        # Modelo público de difusión estable 2.1
         self.model_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
-        # Puedes cambiar a runwayml/stable-diffusion-v1-5 o tu endpoint privado.
-        # Nota: La API puede tardar por "cold start"; implementamos reintentos.
 
     def _hf_txt2img(self, prompt: str, width: int = 768, height: int = 480, retries: int = 6) -> Optional[Image.Image]:
         if not self.hf_api_token:
-            print("[AVISO] Falta HF_API_TOKEN: usando placeholder.")
+            print("[AVISO] Falta HF_TOKEN: usando placeholder.")
             return None
         headers = {
             "Authorization": f"Bearer {self.hf_api_token}",
             "Accept": "image/png",
         }
         payload = {"inputs": prompt}
-        # Backoff progresivo para 503/429
         for i in range(retries):
             try:
                 r = requests.post(self.model_url, headers=headers, json=payload, timeout=90)
                 if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
                     return Image.open(io.BytesIO(r.content)).convert("RGB").resize((width, height), Image.LANCZOS)
                 else:
-                    # Model loading / rate limit
                     wait = 2 * (i + 1)
                     print(f"[AVISO] HF Inference {r.status_code}: reintento en {wait}s")
                     time.sleep(wait)
@@ -215,16 +212,11 @@ class ComicPDF(FPDF):
         self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
     def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float) -> Tuple[str, float]:
-        # Ajuste de tamaño manteniendo proporción
         iw, ih = img.size
-        # px/mm aproximado (300 ppp ~ 12 px/mm). FPDF usará mm para colocar.
-        scale = w_mm
-        # Devolvemos altura en mm proporcional al ancho en mm (relación h/w de la imagen)
         h_mm = w_mm * (ih / iw)
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             path = tmp.name
         img_rgb = img.convert("RGB")
-        # Guardamos sin reescalar en píxeles; dejamos que FPDF escale visualmente por mm
         img_rgb.save(path, "JPEG", quality=90, optimize=True)
         return path, h_mm
 
@@ -239,18 +231,16 @@ class ComicPDF(FPDF):
         l, r = self.l_margin, self.r_margin
         usable_w = self.w - l - r
         text_w = usable_w - img_w_mm - gutter_mm
-        if text_w < 40:  # evitar columnas ridículas
+        if text_w < 40:
             text_w = usable_w
             img_w_mm = 0.0
 
-        # Calcular altura estimada del texto para decidir salto de página
         lines = self.multi_cell(text_w if img_w_mm>0 else usable_w, line_h, text, align='J', split_only=True)
         text_h = len(lines) * line_h
 
         y_start = self.get_y()
         bottom_limit = self.h - self.b_margin
 
-        # Altura imagen (en mm)
         img_path, img_h = (None, 0.0)
         if img_w_mm > 0:
             img_path, img_h = self._pil_to_temp_jpg(img, img_w_mm)
@@ -267,21 +257,16 @@ class ComicPDF(FPDF):
             else:
                 x_img = l
                 x_text = l + img_w_mm + gutter_mm
-            # Dibujar imagen
             self.image(img_path, x=x_img, y=y_start, w=img_w_mm)
             try: os.remove(img_path)
             except Exception: pass
         else:
-            # Sin imagen (o columna muy estrecha): texto a ancho completo
             x_text = l
             text_w = usable_w
 
-        # Escribir texto al lado
         self.set_xy(x_text, y_start)
         self.multi_cell(text_w, line_h, text, align='J')
         y_text_end = self.get_y()
-
-        # Colocar cursor al final del bloque (debajo de lo más bajo)
         y_next = max(y_start + img_h, y_text_end) + 4.0
         self.set_xy(l, y_next)
 
@@ -305,7 +290,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
     pdf.set_author("MathGym / José Luis Cantón")
 
     pdf.add_page()
-    # Portada full ancho
     path_tmp, h_mm = pdf._pil_to_temp_jpg(cover_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
     pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
     try: os.remove(path_tmp)
@@ -313,20 +297,18 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
     pdf.ln(5)
     pdf.header_title(title)
 
-    # Reglas de integración: hasta 6 imágenes de párrafo, alternando lado
+    # Imágenes integradas: hasta 6 párrafos, alternando lado
     paragraphs = [b.text for b in blocks if b.type == "p"]
     max_imgs = 6
     img_paras_idx = [i for i in range(min(max_imgs, len(paragraphs)))]
     side = "right"
 
-    # Recorremos blocks respetando headings (saltando H2 "Actividades")
     p_counter = 0
     for b in blocks:
         if b.type.startswith("h"):
             level = int(b.type[1])
-            # Saltar el H2 "Actividades" en el cuerpo (lo pondremos en página aparte)
             if level == 2 and b.text.strip().lower() == "actividades":
-                continue
+                continue  # H2 "Actividades" va en su propia página
             if level == 2:
                 pdf.use_font(style="B", size=16)
                 pdf.set_text_color(200, 30, 30)
@@ -344,7 +326,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
         if b.type == "p":
             text_clean = clean_inline_md(b.text)
             if p_counter in img_paras_idx:
-                # Generar imagen para este párrafo e integrar a un lado
                 prompt = f"Escena: {text_clean}"
                 img = gen.generate(prompt, width=960, height=600)
                 pdf.flow_paragraph_with_image(text_clean, img, side=side, img_w_mm=68.0)
@@ -354,7 +335,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
                 pdf.ln(2)
             p_counter += 1
 
-    # Página de Actividades (si existen)
     if actividades:
         pdf.add_page()
         pdf.use_font(style="B", size=18)
@@ -367,7 +347,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
             pdf.multi_cell(0, 6, f"• {clean_inline_md(act)}", align='J')
             pdf.ln(2)
 
-    # Guardar replicando estructura
     rel_path = os.path.relpath(os.path.dirname(md_path), input_folder)
     pdf_folder = os.path.join(output_folder, rel_path)
     os.makedirs(pdf_folder, exist_ok=True)
@@ -387,17 +366,21 @@ def main():
     parser = argparse.ArgumentParser(description="Genera PDFs tipo cómic a partir de Markdown con imágenes integradas")
     parser.add_argument("--input-folder", default="historias", help="Carpeta base de entrada")
     parser.add_argument("--output-folder", default="pdfs_generados", help="Carpeta base de salida")
+    parser.add_argument("--list-file", help="Ruta a un fichero con rutas .md (una por línea)")
     parser.add_argument("md_files", nargs="*", help="Rutas específicas de .md (opcional)")
     args = parser.parse_args()
 
-    fast_mode = os.getenv("FAST_MODE", "0").lower() in ("1", "true", "yes")  # por defecto real
+    fast_mode = os.getenv("FAST_MODE", "0").lower() in ("1", "true", "yes")
     font_path = os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     if not os.path.isfile(font_path):
         print(f"[AVISO] Fuente Unicode no encontrada en {font_path}. Se usará Helvetica (ASCII).")
 
     gen = ImageGen(fast_mode=fast_mode, font_path=font_path)
 
-    if args.md_files:
+    if args.list_file and os.path.isfile(args.list_file):
+        with open(args.list_file, 'r', encoding='utf-8') as lf:
+            md_list = [ln.strip() for ln in lf if ln.strip()]
+    elif args.md_files:
         md_list = [p for p in args.md_files if os.path.isfile(p) and p.endswith(".md")]
     else:
         md_list = listar_md(args.input_folder)
@@ -414,4 +397,4 @@ def main():
             print(f"❌ Error procesando {md}: {e}")
 
 if __name__ == "__main__":
-    main()
+
