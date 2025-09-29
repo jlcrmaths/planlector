@@ -67,6 +67,7 @@ def parse_markdown(text: str) -> Tuple[List['Block'], List[str], List[str], str]
     flush_para()
     return blocks, h2_list, actividades, (title_h1 or "")
 
+# ---------- Placeholders (modo FAST) ----------
 def load_font_for_placeholder(font_path: Optional[str], size: int) -> ImageFont.ImageFont:
     try:
         if font_path and os.path.isfile(font_path):
@@ -90,6 +91,7 @@ def make_placeholder(prompt: str, size=(512, 320), bg=(236, 239, 244), fg=(38, 5
     draw.text(((W - bw)//2, y0 + th + 14), body, font=font_body, fill=fg)
     return img
 
+# ---------- SD opcional ----------
 class SDWrapper:
     def __init__(self, fast_mode: bool, hf_token: Optional[str]):
         self.fast_mode = fast_mode
@@ -110,9 +112,10 @@ class SDWrapper:
             from diffusers import StableDiffusionPipeline
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
             dtype = torch.float16 if self._device == "cuda" else torch.float32
+            # Nota: usar token= (use_auth_token está deprecado)
             self._pipe = StableDiffusionPipeline.from_pretrained(
                 "CompVis/stable-diffusion-v1-4",
-                token=self.hf_token,           # usar 'token=' (use_auth_token está deprecado)
+                token=self.hf_token,
                 torch_dtype=dtype,
             ).to(self._device)
             try:
@@ -142,26 +145,76 @@ class SDWrapper:
             print(f"[AVISO] Fallo generando imagen, usando placeholder: {e}")
             return make_placeholder(prompt, size=(min(width, 768), min(height, 512)), font_path=font_path)
 
+# ---------- PDF ----------
 class ComicPDF(FPDF):
     def __init__(self, font_path: Optional[str] = None):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.set_auto_page_break(auto=True, margin=15)
+        self._font_family = "helvetica"  # fallback ASCII
         self._font_ready = False
-        self._font_family = "helvetica"
+        self._has_b = self._has_i = self._has_bi = False
         self._font_path = font_path
         self._init_fonts()
 
     def _init_fonts(self):
+        """
+        Registra DejaVu Sans regular + Bold + Oblique + BoldOblique si están disponibles.
+        Si no están, queda Helvetica y evitamos pedir estilos no disponibles.
+        """
+        # Si nos pasaron FONT_PATH (regular), deducimos el directorio y nombres de variante:
+        candidates = []
         if self._font_path and os.path.isfile(self._font_path):
-            try:
-                self.add_font("DejaVu", style="", fname=self._font_path)
+            base_dir = os.path.dirname(self._font_path)
+        else:
+            base_dir = "/usr/share/fonts/truetype/dejavu"
+
+        reg  = os.path.join(base_dir, "DejaVuSans.ttf")
+        bold = os.path.join(base_dir, "DejaVuSans-Bold.ttf")
+        ital = os.path.join(base_dir, "DejaVuSans-Oblique.ttf")
+        boldital = os.path.join(base_dir, "DejaVuSans-BoldOblique.ttf")
+
+        try:
+            if os.path.isfile(reg):
+                self.add_font("DejaVu", style="",  fname=reg)
                 self._font_family = "DejaVu"
                 self._font_ready = True
-            except Exception as e:
-                print(f"[AVISO] No se pudo cargar la fuente Unicode ({self._font_path}): {e}")
+            if os.path.isfile(bold):
+                self.add_font("DejaVu", style="B", fname=bold)
+                self._has_b = True
+            if os.path.isfile(ital):
+                self.add_font("DejaVu", style="I", fname=ital)
+                self._has_i = True
+            if os.path.isfile(boldital):
+                self.add_font("DejaVu", style="BI", fname=boldital)
+                self._has_bi = True
+        except Exception as e:
+            print(f"[AVISO] No se pudieron registrar fuentes DejaVu completas: {e}")
+            # Mantener fallback Helvetica
+
+    def use_font(self, style: str = "", size: int = 12):
+        """
+        Selecciona la fuente con estilo disponible; si no existe la variante, cae a regular.
+        Evita errores 'Undefined font: dejavuB'.
+        """
+        if self._font_family.lower() == "dejavu":
+            up = "".join(sorted(set(style.upper())))  # "B", "I" o "BI"
+            if up == "BI" and self._has_bi:
+                self.set_font("DejaVu", style="BI", size=size)
+                return
+            if up == "B" and self._has_b:
+                self.set_font("DejaVu", style="B", size=size)
+                return
+            if up == "I" and self._has_i:
+                self.set_font("DejaVu", style="I", size=size)
+                return
+            # Regular (si faltan variantes)
+            self.set_font("DejaVu", style="", size=size)
+        else:
+            # Fallback Helvetica (ASCII)
+            self.set_font(self._font_family, style="", size=size)
 
     def header_title(self, title: str):
-        self.set_font(self._font_family, style="B" if self._font_ready else "", size=20)
+        self.use_font(style="B", size=20)
         self.set_text_color(30, 30, 120)
         self.multi_cell(0, 10, title, align="C")
         self.ln(3)
@@ -190,37 +243,44 @@ class ComicPDF(FPDF):
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, sd: SDWrapper, font_path: Optional[str]):
     with open(md_path, "r", encoding="utf-8") as f:
         text = f.read()
+
     blocks, h2_list, actividades, title_h1 = parse_markdown(text)
     filename_title = os.path.splitext(os.path.basename(md_path))[0]
     title = title_h1 or filename_title
+
+    # Portada e imágenes intercaladas (modo FAST → placeholders)
     portada_prompt = f"Portada tipo cómic, colorida, título: {title}"
     portada_img = sd.generate(portada_prompt, width=768, height=512, font_path=font_path)
+
     paragraphs = [b.text for b in blocks if b.type == "p"]
     para_prompts = [f"Ilustración tipo cómic, escena: {p}" for p in paragraphs[:3]]
     para_images = [sd.generate(p, width=640, height=400, font_path=font_path) for p in para_prompts]
+
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
     pdf.set_author("MathGym / José Luis Cantón")
+
     pdf.add_page()
     pdf.add_image_fullwidth(portada_img)
     pdf.header_title(title)
-    pdf.set_font(pdf._font_family, size=12)
+
+    pdf.use_font(size=12)
     img_idx = 0
     for b in blocks:
         if b.type.startswith("h"):
             level = int(b.type[1])
             if level == 2:
-                pdf.set_font(pdf._font_family, style="B", size=16)
+                pdf.use_font(style="B", size=16)
                 pdf.set_text_color(200, 30, 30)
                 pdf.multi_cell(0, 8, b.text)
                 pdf.ln(2)
                 pdf.set_text_color(0, 0, 0)
-                pdf.set_font(pdf._font_family, size=12)
+                pdf.use_font(size=12)
             elif level == 3:
-                pdf.set_font(pdf._font_family, style="B", size=14)
+                pdf.use_font(style="B", size=14)
                 pdf.multi_cell(0, 7, b.text)
                 pdf.ln(1)
-                pdf.set_font(pdf._font_family, size=12)
+                pdf.use_font(size=12)
             continue
         if b.type == "p":
             if img_idx < len(para_images) and b.text.strip():
@@ -228,17 +288,20 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, sd: S
                 img_idx += 1
             pdf.multi_cell(0, 6, b.text)
             pdf.ln(2)
+
     if actividades:
         pdf.add_page()
-        pdf.set_font(pdf._font_family, style="B", size=18)
+        pdf.use_font(style="B", size=18)
         pdf.set_text_color(30, 100, 30)
         pdf.multi_cell(0, 10, "Actividades", align="C")
         pdf.ln(5)
         pdf.set_text_color(0, 0, 0)
-        pdf.set_font(pdf._font_family, size=12)
+        pdf.use_font(size=12)
         for act in actividades:
             pdf.multi_cell(0, 6, f"• {act}")
             pdf.ln(2)
+
+    # Guardar replicando estructura
     rel_path = os.path.relpath(os.path.dirname(md_path), input_folder)
     pdf_folder = os.path.join(output_folder, rel_path)
     os.makedirs(pdf_folder, exist_ok=True)
@@ -265,6 +328,7 @@ def main():
     hf_token = os.getenv("HF_TOKEN", None)
     font_path = os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     if not os.path.isfile(font_path):
+        # No pasa nada: el código hace fallback a Helvetica sin estilos
         print(f"[AVISO] Fuente Unicode no encontrada en {font_path}. Se usará Helvetica (ASCII).")
 
     sd = SDWrapper(fast_mode=fast_mode, hf_token=hf_token)
