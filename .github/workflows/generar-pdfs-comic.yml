@@ -3,8 +3,10 @@ name: Generar PDFs tipo cómic (CI rápido)
 on:
   push:
     paths:
+      - 'historias/*.md'
       - 'historias/**/*.md'
       - 'scripts/generar_pdfs_comic.py'
+      - '.github/workflows/generar-pdfs-comic.yml'
       - 'requirements.txt'
 
 jobs:
@@ -38,17 +40,19 @@ jobs:
         uses: tj-actions/changed-files@v45
         with:
           files: |
+            historias/*.md
             historias/**/*.md
           separator: " "
 
       - name: Generar PDFs (modo rápido con placeholders)
         env:
-          FAST_MODE: '1'                    # Cambia a '0' para imágenes reales (requiere diffusers/torch y más tiempo)
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}  # Necesario solo si FAST_MODE=0 y el modelo lo requiere
+          FAST_MODE: '1'
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
         run: |
           mkdir -p pdfs_generados
           CHANGED="${{ steps.changed.outputs.all_changed_files }}"
+          echo "Archivos MD cambiados: '$CHANGED'"
           if [ -z "$CHANGED" ]; then
             echo "Sin lista de cambios; procesando todo 'historias/'"
             python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
@@ -58,12 +62,24 @@ jobs:
             python scripts/generar_pdfs_comic.py --output-folder pdfs_generados $CHANGED
           fi
 
+      - name: Listar PDFs generados
+        id: listpdfs
+        run: |
+          echo "Contenido de pdfs_generados/:"
+          ls -la pdfs_generados || true
+          echo "Listado recursivo de PDFs:"
+          find pdfs_generados -type f -name '*.pdf' -print || true
+          COUNT=$(find pdfs_generados -type f -name '*.pdf' 2>/dev/null | wc -l || true)
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
       - name: Subir PDFs como artefacto
+        if: steps.listpdfs.outputs.count != '0'
         uses: actions/upload-artifact@v4
         with:
           name: pdfs-comic
-          path: pdfs_generados/**/*.pdf
-          if-no-files-found: warn
-
+          path: |
+            pdfs_generados/*.pdf
+            pdfs_generados/**/*.pdf
+          if-no-files-found: error
 
 
