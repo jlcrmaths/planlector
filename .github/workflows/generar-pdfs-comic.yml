@@ -1,4 +1,4 @@
-name: Generar PDFs tipo cómic (CI rápido)
+name: Generar PDFs tipo cómic (con imágenes integradas)
 
 on:
   push:
@@ -12,6 +12,7 @@ on:
 jobs:
   generar_pdfs:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -24,7 +25,7 @@ jobs:
           cache: 'pip'
           cache-dependency-path: requirements.txt
 
-      - name: Instalar dependencias (mínimas, sin SD)
+      - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -44,10 +45,11 @@ jobs:
             historias/**/*.md
           separator: " "
 
-      - name: Generar PDFs (modo rápido con placeholders)
+      - name: Generar PDFs con imágenes reales integradas
         env:
-          FAST_MODE: '1'
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # 👉 Pon este secret en tu repo: Settings > Secrets and variables > Actions > New repository secret
+          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
+          FAST_MODE: '0'  # 0 = imágenes reales por API; 1 = placeholders rápidos
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
         run: |
           mkdir -p pdfs_generados
