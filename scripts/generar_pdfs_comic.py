@@ -114,7 +114,7 @@ class ImageGen:
     def __init__(self, fast_mode: bool, font_path: Optional[str]=None):
         self.fast_mode = fast_mode
         self.font_path = font_path
-        self.hf_api_token = os.getenv("HF_API_TOKEN")
+        self.hf_api_token = os.getenv("HF_TOKEN")
         self.model_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
         # Puedes cambiar a runwayml/stable-diffusion-v1-5 o tu endpoint privado.
         # Nota: La API puede tardar por "cold start"; implementamos reintentos.
