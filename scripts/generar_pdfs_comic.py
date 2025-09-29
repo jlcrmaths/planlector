@@ -4,15 +4,22 @@
 import os
 import re
 import sys
+import io
+import time
+import math
 import argparse
 import textwrap
 import tempfile
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
+import requests
 from fpdf import FPDF
 from PIL import Image, ImageDraw, ImageFont
 
+# --------------------------
+# Utilidades y parsing MD
+# --------------------------
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 
 @dataclass
@@ -67,7 +74,16 @@ def parse_markdown(text: str) -> Tuple[List['Block'], List[str], List[str], str]
     flush_para()
     return blocks, h2_list, actividades, (title_h1 or "")
 
-# ---------- Placeholders (modo FAST) ----------
+def clean_inline_md(s: str) -> str:
+    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)  # **bold** -> bold
+    s = re.sub(r'__(.+?)__', r'\1', s)      # __bold__ -> bold
+    s = s.replace(r'\(', '(').replace(r'\)', ')').replace(r'\*', '*')
+    s = re.sub(r'\s{2,}', ' ', s).strip()
+    return s
+
+# --------------------------
+# Placeholders (modo rápido)
+# --------------------------
 def load_font_for_placeholder(font_path: Optional[str], size: int) -> ImageFont.ImageFont:
     try:
         if font_path and os.path.isfile(font_path):
@@ -76,141 +92,113 @@ def load_font_for_placeholder(font_path: Optional[str], size: int) -> ImageFont.
         pass
     return ImageFont.load_default()
 
-def make_placeholder(prompt: str, size=(512, 320), bg=(236, 239, 244), fg=(38, 50, 56), font_path: Optional[str]=None) -> Image.Image:
+def make_placeholder(prompt: str, size=(768, 480), bg=(236, 239, 244), fg=(38, 50, 56), font_path: Optional[str]=None) -> Image.Image:
     img = Image.new("RGB", size, bg)
     draw = ImageDraw.Draw(img)
     title = "Ilustración tipo cómic"
-    body = textwrap.shorten(prompt.replace("\n", " "), width=180, placeholder="…")
-    font_title = load_font_for_placeholder(font_path, 28)
-    font_body = load_font_for_placeholder(font_path, 18)
+    body = textwrap.shorten(prompt.replace("\n", " "), width=200, placeholder="…")
+    font_title = load_font_for_placeholder(font_path, 32)
+    font_body = load_font_for_placeholder(font_path, 20)
     tw, th = draw.textbbox((0, 0), title, font=font_title)[2:]
     bw, bh = draw.textbbox((0, 0), body, font=font_body)[2:]
     W, H = img.size
-    y0 = (H - (th + 14 + bh)) // 2
+    y0 = (H - (th + 18 + bh)) // 2
     draw.text(((W - tw)//2, y0), title, font=font_title, fill=fg)
-    draw.text(((W - bw)//2, y0 + th + 14), body, font=font_body, fill=fg)
+    draw.text(((W - bw)//2, y0 + th + 18), body, font=font_body, fill=fg)
     return img
 
-# ---------- SD opcional ----------
-class SDWrapper:
-    def __init__(self, fast_mode: bool, hf_token: Optional[str]):
+# --------------------------
+# Generación de imágenes (HF API)
+# --------------------------
+class ImageGen:
+    def __init__(self, fast_mode: bool, font_path: Optional[str]=None):
         self.fast_mode = fast_mode
-        self.hf_token = hf_token
-        self._pipe = None
-        self._device = "cpu"
-        self._generator = None
-        self._loaded = False
-        self._available = False
+        self.font_path = font_path
+        self.hf_api_token = os.getenv("HF_API_TOKEN")
+        self.model_url = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1"
+        # Puedes cambiar a runwayml/stable-diffusion-v1-5 o tu endpoint privado.
+        # Nota: La API puede tardar por "cold start"; implementamos reintentos.
 
-    def _lazy_load(self):
-        if self.fast_mode:
-            self._loaded = True
-            self._available = False
-            return
-        try:
-            import torch
-            from diffusers import StableDiffusionPipeline
-            self._device = "cuda" if torch.cuda.is_available() else "cpu"
-            dtype = torch.float16 if self._device == "cuda" else torch.float32
-            # Nota: usar token= (use_auth_token está deprecado)
-            self._pipe = StableDiffusionPipeline.from_pretrained(
-                "CompVis/stable-diffusion-v1-4",
-                token=self.hf_token,
-                torch_dtype=dtype,
-            ).to(self._device)
+    def _hf_txt2img(self, prompt: str, width: int = 768, height: int = 480, retries: int = 6) -> Optional[Image.Image]:
+        if not self.hf_api_token:
+            print("[AVISO] Falta HF_API_TOKEN: usando placeholder.")
+            return None
+        headers = {
+            "Authorization": f"Bearer {self.hf_api_token}",
+            "Accept": "image/png",
+        }
+        payload = {"inputs": prompt}
+        # Backoff progresivo para 503/429
+        for i in range(retries):
             try:
-                self._pipe.enable_attention_slicing()
-            except Exception:
-                pass
-            self._generator = torch.Generator(device=self._device).manual_seed(42)
-            self._loaded = True
-            self._available = True
-        except Exception as e:
-            print(f"[AVISO] No se pudo cargar Stable Diffusion: {e}")
-            self._loaded = True
-            self._available = False
+                r = requests.post(self.model_url, headers=headers, json=payload, timeout=90)
+                if r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"):
+                    return Image.open(io.BytesIO(r.content)).convert("RGB").resize((width, height), Image.LANCZOS)
+                else:
+                    # Model loading / rate limit
+                    wait = 2 * (i + 1)
+                    print(f"[AVISO] HF Inference {r.status_code}: reintento en {wait}s")
+                    time.sleep(wait)
+            except Exception as e:
+                wait = 2 * (i + 1)
+                print(f"[AVISO] Error API HF: {e} → reintento en {wait}s")
+                time.sleep(wait)
+        return None
 
-    def generate(self, prompt: str, width: int = 512, height: int = 512, font_path: Optional[str]=None) -> Image.Image:
-        if not self._loaded:
-            self._lazy_load()
-        if not self._available:
-            return make_placeholder(prompt, size=(min(width, 768), min(height, 512)), font_path=font_path)
-        try:
-            import torch  # type: ignore
-            if self._device == "cpu":
-                width = height = 384
-            image = self._pipe(prompt, generator=self._generator, width=width, height=height).images[0]
-            return image
-        except Exception as e:
-            print(f"[AVISO] Fallo generando imagen, usando placeholder: {e}")
-            return make_placeholder(prompt, size=(min(width, 768), min(height, 512)), font_path=font_path)
+    def generate(self, prompt: str, width: int = 768, height: int = 480) -> Image.Image:
+        prompt_full = (
+            "Ilustración estilo cómic educativo, colores vivos, sin texto ni tipografías en la imagen, "
+            "composición limpia, iluminación suave, trazo definido. Escena: " + prompt
+        )
+        if self.fast_mode:
+            return make_placeholder(prompt_full, size=(width, height), font_path=self.font_path)
+        img = self._hf_txt2img(prompt_full, width=width, height=height)
+        if img is None:
+            return make_placeholder(prompt_full, size=(width, height), font_path=self.font_path)
+        return img
 
-# ---------- PDF ----------
+# --------------------------
+# PDF con texto rodeando imagen
+# --------------------------
 class ComicPDF(FPDF):
     def __init__(self, font_path: Optional[str] = None):
         super().__init__(orientation="P", unit="mm", format="A4")
-        self.set_auto_page_break(auto=True, margin=15)
+        self.set_auto_page_break(auto=True, margin=16)
         self._font_family = "helvetica"  # fallback ASCII
+        self._font_path = font_path
         self._font_ready = False
         self._has_b = self._has_i = self._has_bi = False
-        self._font_path = font_path
         self._init_fonts()
 
     def _init_fonts(self):
-        """
-        Registra DejaVu Sans regular + Bold + Oblique + BoldOblique si están disponibles.
-        Si no están, queda Helvetica y evitamos pedir estilos no disponibles.
-        """
-        # Si nos pasaron FONT_PATH (regular), deducimos el directorio y nombres de variante:
-        candidates = []
-        if self._font_path and os.path.isfile(self._font_path):
-            base_dir = os.path.dirname(self._font_path)
-        else:
-            base_dir = "/usr/share/fonts/truetype/dejavu"
-
+        base_dir = os.path.dirname(self._font_path) if (self._font_path and os.path.isfile(self._font_path)) \
+                   else "/usr/share/fonts/truetype/dejavu"
         reg  = os.path.join(base_dir, "DejaVuSans.ttf")
         bold = os.path.join(base_dir, "DejaVuSans-Bold.ttf")
         ital = os.path.join(base_dir, "DejaVuSans-Oblique.ttf")
         boldital = os.path.join(base_dir, "DejaVuSans-BoldOblique.ttf")
-
         try:
             if os.path.isfile(reg):
                 self.add_font("DejaVu", style="",  fname=reg)
                 self._font_family = "DejaVu"
                 self._font_ready = True
             if os.path.isfile(bold):
-                self.add_font("DejaVu", style="B", fname=bold)
-                self._has_b = True
+                self.add_font("DejaVu", style="B", fname=bold); self._has_b = True
             if os.path.isfile(ital):
-                self.add_font("DejaVu", style="I", fname=ital)
-                self._has_i = True
+                self.add_font("DejaVu", style="I", fname=ital); self._has_i = True
             if os.path.isfile(boldital):
-                self.add_font("DejaVu", style="BI", fname=boldital)
-                self._has_bi = True
+                self.add_font("DejaVu", style="BI", fname=boldital); self._has_bi = True
         except Exception as e:
-            print(f"[AVISO] No se pudieron registrar fuentes DejaVu completas: {e}")
-            # Mantener fallback Helvetica
+            print(f"[AVISO] Fuentes DejaVu incompletas: {e}")
 
     def use_font(self, style: str = "", size: int = 12):
-        """
-        Selecciona la fuente con estilo disponible; si no existe la variante, cae a regular.
-        Evita errores 'Undefined font: dejavuB'.
-        """
         if self._font_family.lower() == "dejavu":
-            up = "".join(sorted(set(style.upper())))  # "B", "I" o "BI"
-            if up == "BI" and self._has_bi:
-                self.set_font("DejaVu", style="BI", size=size)
-                return
-            if up == "B" and self._has_b:
-                self.set_font("DejaVu", style="B", size=size)
-                return
-            if up == "I" and self._has_i:
-                self.set_font("DejaVu", style="I", size=size)
-                return
-            # Regular (si faltan variantes)
+            up = "".join(sorted(set(style.upper())))
+            if up == "BI" and self._has_bi: self.set_font("DejaVu", style="BI", size=size); return
+            if up == "B"  and self._has_b:  self.set_font("DejaVu", style="B",  size=size); return
+            if up == "I"  and self._has_i:  self.set_font("DejaVu", style="I",  size=size); return
             self.set_font("DejaVu", style="", size=size)
         else:
-            # Fallback Helvetica (ASCII)
             self.set_font(self._font_family, style="", size=size)
 
     def header_title(self, title: str):
@@ -220,27 +208,87 @@ class ComicPDF(FPDF):
         self.ln(3)
         self.set_text_color(0, 0, 0)
 
-    def add_image_fullwidth(self, img: Image.Image, max_w: float = None):
-        if max_w is None:
-            max_w = self.w - 2 * self.l_margin
+    def footer(self):
+        self.set_y(-15)
+        self.use_font(size=10)
+        self.set_text_color(120, 120, 120)
+        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+
+    def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float) -> Tuple[str, float]:
+        # Ajuste de tamaño manteniendo proporción
+        iw, ih = img.size
+        # px/mm aproximado (300 ppp ~ 12 px/mm). FPDF usará mm para colocar.
+        scale = w_mm
+        # Devolvemos altura en mm proporcional al ancho en mm (relación h/w de la imagen)
+        h_mm = w_mm * (ih / iw)
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             path = tmp.name
-        try:
-            img_rgb = img.convert("RGB")
-            iw, ih = img_rgb.size
-            scale = max_w / iw
-            new_size = (int(iw * scale), int(ih * scale))
-            img_rgb = img_rgb.resize(new_size, Image.LANCZOS)
-            img_rgb.save(path, "JPEG", quality=90, optimize=True)
-            self.image(path, w=max_w)
-            self.ln(5)
-        finally:
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+        img_rgb = img.convert("RGB")
+        # Guardamos sin reescalar en píxeles; dejamos que FPDF escale visualmente por mm
+        img_rgb.save(path, "JPEG", quality=90, optimize=True)
+        return path, h_mm
 
-def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, sd: SDWrapper, font_path: Optional[str]):
+    def flow_paragraph_with_image(self, text: str, img: Image.Image, side: str = "right",
+                                  img_w_mm: float = 68.0, gutter_mm: float = 6.0,
+                                  line_h: float = 6.0):
+        """
+        Coloca una imagen a un lado y fluye el texto en el espacio restante,
+        continuando debajo de la imagen si hace falta.
+        """
+        text = clean_inline_md(text)
+        l, r = self.l_margin, self.r_margin
+        usable_w = self.w - l - r
+        text_w = usable_w - img_w_mm - gutter_mm
+        if text_w < 40:  # evitar columnas ridículas
+            text_w = usable_w
+            img_w_mm = 0.0
+
+        # Calcular altura estimada del texto para decidir salto de página
+        lines = self.multi_cell(text_w if img_w_mm>0 else usable_w, line_h, text, align='J', split_only=True)
+        text_h = len(lines) * line_h
+
+        y_start = self.get_y()
+        bottom_limit = self.h - self.b_margin
+
+        # Altura imagen (en mm)
+        img_path, img_h = (None, 0.0)
+        if img_w_mm > 0:
+            img_path, img_h = self._pil_to_temp_jpg(img, img_w_mm)
+
+        needed_h = max(text_h, img_h)
+        if y_start + needed_h > bottom_limit:
+            self.add_page()
+            y_start = self.get_y()
+
+        if img_w_mm > 0 and img_path:
+            if side == "right":
+                x_img = self.w - r - img_w_mm
+                x_text = l
+            else:
+                x_img = l
+                x_text = l + img_w_mm + gutter_mm
+            # Dibujar imagen
+            self.image(img_path, x=x_img, y=y_start, w=img_w_mm)
+            try: os.remove(img_path)
+            except Exception: pass
+        else:
+            # Sin imagen (o columna muy estrecha): texto a ancho completo
+            x_text = l
+            text_w = usable_w
+
+        # Escribir texto al lado
+        self.set_xy(x_text, y_start)
+        self.multi_cell(text_w, line_h, text, align='J')
+        y_text_end = self.get_y()
+
+        # Colocar cursor al final del bloque (debajo de lo más bajo)
+        y_next = max(y_start + img_h, y_text_end) + 4.0
+        self.set_xy(l, y_next)
+
+# --------------------------
+# Generador principal
+# --------------------------
+def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: ImageGen, font_path: Optional[str]):
     with open(md_path, "r", encoding="utf-8") as f:
         text = f.read()
 
@@ -248,57 +296,75 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, sd: S
     filename_title = os.path.splitext(os.path.basename(md_path))[0]
     title = title_h1 or filename_title
 
-    # Portada e imágenes intercaladas (modo FAST → placeholders)
-    portada_prompt = f"Portada tipo cómic, colorida, título: {title}"
-    portada_img = sd.generate(portada_prompt, width=768, height=512, font_path=font_path)
-
-    paragraphs = [b.text for b in blocks if b.type == "p"]
-    para_prompts = [f"Ilustración tipo cómic, escena: {p}" for p in paragraphs[:3]]
-    para_images = [sd.generate(p, width=640, height=400, font_path=font_path) for p in para_prompts]
+    # Portada
+    portada_prompt = f"Portada educativa estilo cómic, limpia, con símbolos numéricos sutiles, sin texto sobreimpreso. Título: {title}"
+    cover_img = gen.generate(portada_prompt, width=1280, height=720)
 
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
     pdf.set_author("MathGym / José Luis Cantón")
 
     pdf.add_page()
-    pdf.add_image_fullwidth(portada_img)
+    # Portada full ancho
+    path_tmp, h_mm = pdf._pil_to_temp_jpg(cover_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
+    pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
+    try: os.remove(path_tmp)
+    except Exception: pass
+    pdf.ln(5)
     pdf.header_title(title)
 
-    pdf.use_font(size=12)
-    img_idx = 0
+    # Reglas de integración: hasta 6 imágenes de párrafo, alternando lado
+    paragraphs = [b.text for b in blocks if b.type == "p"]
+    max_imgs = 6
+    img_paras_idx = [i for i in range(min(max_imgs, len(paragraphs)))]
+    side = "right"
+
+    # Recorremos blocks respetando headings (saltando H2 "Actividades")
+    p_counter = 0
     for b in blocks:
         if b.type.startswith("h"):
             level = int(b.type[1])
+            # Saltar el H2 "Actividades" en el cuerpo (lo pondremos en página aparte)
+            if level == 2 and b.text.strip().lower() == "actividades":
+                continue
             if level == 2:
                 pdf.use_font(style="B", size=16)
                 pdf.set_text_color(200, 30, 30)
-                pdf.multi_cell(0, 8, b.text)
+                pdf.multi_cell(0, 8, clean_inline_md(b.text), align='J')
                 pdf.ln(2)
                 pdf.set_text_color(0, 0, 0)
                 pdf.use_font(size=12)
             elif level == 3:
                 pdf.use_font(style="B", size=14)
-                pdf.multi_cell(0, 7, b.text)
+                pdf.multi_cell(0, 7, clean_inline_md(b.text), align='J')
                 pdf.ln(1)
                 pdf.use_font(size=12)
             continue
-        if b.type == "p":
-            if img_idx < len(para_images) and b.text.strip():
-                pdf.add_image_fullwidth(para_images[img_idx], max_w=pdf.w - 2 * pdf.l_margin)
-                img_idx += 1
-            pdf.multi_cell(0, 6, b.text)
-            pdf.ln(2)
 
+        if b.type == "p":
+            text_clean = clean_inline_md(b.text)
+            if p_counter in img_paras_idx:
+                # Generar imagen para este párrafo e integrar a un lado
+                prompt = f"Escena: {text_clean}"
+                img = gen.generate(prompt, width=960, height=600)
+                pdf.flow_paragraph_with_image(text_clean, img, side=side, img_w_mm=68.0)
+                side = "left" if side == "right" else "right"
+            else:
+                pdf.multi_cell(0, 6, text_clean, align='J')
+                pdf.ln(2)
+            p_counter += 1
+
+    # Página de Actividades (si existen)
     if actividades:
         pdf.add_page()
         pdf.use_font(style="B", size=18)
         pdf.set_text_color(30, 100, 30)
-        pdf.multi_cell(0, 10, "Actividades", align="C")
+        pdf.multi_cell(0, 10, "Actividades", align='C')
         pdf.ln(5)
         pdf.set_text_color(0, 0, 0)
         pdf.use_font(size=12)
         for act in actividades:
-            pdf.multi_cell(0, 6, f"• {act}")
+            pdf.multi_cell(0, 6, f"• {clean_inline_md(act)}", align='J')
             pdf.ln(2)
 
     # Guardar replicando estructura
@@ -318,20 +384,18 @@ def listar_md(input_folder: str) -> List[str]:
     return sorted(out)
 
 def main():
-    parser = argparse.ArgumentParser(description="Genera PDFs tipo cómic a partir de Markdown")
+    parser = argparse.ArgumentParser(description="Genera PDFs tipo cómic a partir de Markdown con imágenes integradas")
     parser.add_argument("--input-folder", default="historias", help="Carpeta base de entrada")
     parser.add_argument("--output-folder", default="pdfs_generados", help="Carpeta base de salida")
     parser.add_argument("md_files", nargs="*", help="Rutas específicas de .md (opcional)")
     args = parser.parse_args()
 
-    fast_mode = os.getenv("FAST_MODE", "1").lower() in ("1", "true", "yes")
-    hf_token = os.getenv("HF_TOKEN", None)
+    fast_mode = os.getenv("FAST_MODE", "0").lower() in ("1", "true", "yes")  # por defecto real
     font_path = os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     if not os.path.isfile(font_path):
-        # No pasa nada: el código hace fallback a Helvetica sin estilos
         print(f"[AVISO] Fuente Unicode no encontrada en {font_path}. Se usará Helvetica (ASCII).")
 
-    sd = SDWrapper(fast_mode=fast_mode, hf_token=hf_token)
+    gen = ImageGen(fast_mode=fast_mode, font_path=font_path)
 
     if args.md_files:
         md_list = [p for p in args.md_files if os.path.isfile(p) and p.endswith(".md")]
@@ -345,7 +409,7 @@ def main():
 
     for md in md_list:
         try:
-            generar_pdf_de_md(md, args.input_folder, args.output_folder, sd, font_path=font_path)
+            generar_pdf_de_md(md, args.input_folder, args.output_folder, gen, font_path=font_path)
         except Exception as e:
             print(f"❌ Error procesando {md}: {e}")
 
