@@ -3,7 +3,7 @@ name: Generar PDFs tipo cómic
 on:
   push:
     paths:
-      - 'historias/**'   # Detecta cambios en cualquier archivo .md dentro de historias o subcarpetas
+      - 'historias/**'
 
 jobs:
   generar_pdfs:
@@ -11,10 +11,10 @@ jobs:
 
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v4   # ✅ última versión
+      uses: actions/checkout@v4   # ✅ actualizado
 
     - name: Configurar Python
-      uses: actions/setup-python@v5   # ✅ última versión
+      uses: actions/setup-python@v5   # ✅ actualizado
       with:
         python-version: '3.11'
 
@@ -25,14 +25,14 @@ jobs:
 
     - name: Generar PDFs tipo cómic
       env:
-        HF_TOKEN: ${{ secrets.HF_TOKEN }}   # 🔒 Token de Hugging Face
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         python generar_pdf_top_hf_subcarpetas.py
 
     - name: Guardar PDFs como artefactos
-      uses: actions/upload-artifact@v4   # ✅ corregido, no más error
+      uses: actions/upload-artifact@v4   # ✅ nueva versión
       with:
         name: pdfs-comic
-        path: |
-          pdfs_generados/**/*.pdf   # Recoge todos los PDFs generados en subcarpetas
+        path: pdfs_generados/**/*.pdf
+
 
