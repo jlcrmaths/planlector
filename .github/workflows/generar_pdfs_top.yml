@@ -1,0 +1,37 @@
+name: Generar PDFs tipo cómic
+
+on:
+  push:
+    paths:
+      - 'historias/**'   # Detecta cambios en cualquier archivo .md dentro de historias o subcarpetas
+
+jobs:
+  generar_pdfs:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Configurar Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Instalar dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install markdown2 fpdf pillow diffusers torch transformers
+
+    - name: Generar PDFs tipo cómic
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}   # 🔒 Secreto con tu token de Hugging Face
+      run: |
+        python generar_pdf_top_hf_subcarpetas.py
+
+    - name: Guardar PDFs como artefactos
+      uses: actions/upload-artifact@v3
+      with:
+        name: pdfs-comic
+        path: |
+          pdfs_generados/**/*.pdf   # Recoge todos los PDFs generados en subcarpetas
