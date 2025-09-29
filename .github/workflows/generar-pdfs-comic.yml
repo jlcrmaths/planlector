@@ -1,4 +1,4 @@
-name: Generar PDFs tipo cómic (con imágenes integradas)
+name: Generar PDFs tipo cómic (imágenes reales integradas, sin GPU)
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
 jobs:
   generar_pdfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -30,61 +30,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Instalar fuentes (DejaVu + Noto extra)
+      - name: Instalar fuente DejaVu (Unicode)
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-dejavu-core fonts-noto-core fonts-noto-extra
-          fc-list | grep -i -E 'DejaVuSans|Noto' || true
+          sudo apt-get install -y fonts-dejavu-core
+          fc-list | grep -i DejaVuSans || true
 
-      - name: Detectar archivos .md cambiados (JSON)
-        id: changed
-        uses: tj-actions/changed-files@v45
-        with:
-          files: |
-            historias/*.md
-            historias/**/*.md
-          json: true
-
-      - name: Preparar lista de .md a procesar (soporta espacios)
-        id: prep
-        uses: actions/github-script@v7
+      - name: Generar PDFs
         env:
-          CHANGED_JSON: ${{ steps.changed.outputs.all_changed_files_json }}
-          CHANGED_COUNT: ${{ steps.changed.outputs.all_changed_files_count }}
-        with:
-          script: |
-            const fs = require('fs');
-            const changedCount = Number(process.env.CHANGED_COUNT || '0');
-            if (!process.env.CHANGED_JSON || !changedCount) { core.setOutput('mode','all'); return; }
-            let files = [];
-            try { files = JSON.parse(process.env.CHANGED_JSON || '[]'); } catch {}
-            const mds = files.filter(p => p.toLowerCase().endsWith('.md') && p.startsWith('historias/'));
-            if (mds.length) { fs.writeFileSync('changed_list.txt', mds.join('\n')); core.setOutput('mode','list'); }
-            else { core.setOutput('mode','all'); }
-
-      - name: Generar PDFs (solo cambiados)
-        if: steps.prep.outputs.mode == 'list'
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_MODEL_ID: runwayml/stable-diffusion-v1-5
-          FAST_MODE: '0'  # 0=imágenes reales (API); 1=placeholders
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
         run: |
           mkdir -p pdfs_generados
-          echo "Procesando solo los MD cambiados:"
-          cat changed_list.txt
-          python scripts/generar_pdfs_comic.py --output-folder pdfs_generados --list-file changed_list.txt
-
-      - name: Generar PDFs (todo historias/)
-        if: steps.prep.outputs.mode != 'list'
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_MODEL_ID: runwayml/stable-diffusion-v1-5
-          FAST_MODE: '0'
-          FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-        run: |
-          mkdir -p pdfs_generados
-          echo "Sin lista de cambios; procesando todo 'historias/'"
           python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
 
       - name: Listar PDFs generados
