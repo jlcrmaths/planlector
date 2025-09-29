@@ -48,7 +48,7 @@ jobs:
       - name: Generar PDFs con imágenes reales integradas
         env:
           # 👉 Pon este secret en tu repo: Settings > Secrets and variables > Actions > New repository secret
-          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
+          HF_API_TOKEN: ${{ secrets.HF_TOKEN }}
           FAST_MODE: '0'  # 0 = imágenes reales por API; 1 = placeholders rápidos
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
         run: |
