@@ -3,21 +3,19 @@
 
 import os
 import re
-import io
 import argparse
 import textwrap
 import tempfile
 from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Optional, Set, Tuple
 
-import requests
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+from PIL import Image, ImageDraw
 
-# --------------------------
-# Parsing Markdown muy simple
-# --------------------------
+from scripts.imagerouter_client import generate_image_via_imagerouter, ImageRouterError
+
+# ---------- Parsing MD muy simple ----------
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 
 @dataclass
@@ -25,21 +23,27 @@ class Block:
     type: str   # 'h1'..'h6' o 'p'
     text: str
 
-def parse_markdown(text: str) -> Tuple[List['Block'], List[str], List[str], str]:
+def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
+    """
+    Devuelve (blocks, actividades, title_h1)
+    - blocks: secuencia de 'h#' y 'p'
+    - actividades: líneas bajo H2 "Actividades"
+    - title_h1: título del documento si existe
+    """
     lines = text.splitlines()
     blocks: List[Block] = []
-    h2_list: List[str] = []
     actividades: List[str] = []
     current_para: List[str] = []
-    in_actividades = False
     title_h1: Optional[str] = None
+    in_actividades = False
 
     def flush_para():
-        nonlocal current_para, blocks
+        nonlocal current_para
         if current_para:
             blocks.append(Block('p', "\n".join(current_para).strip()))
             current_para = []
 
+    last_line_blank = False
     for line in lines:
         m = HEADING_RE.match(line)
         if m:
@@ -49,124 +53,134 @@ def parse_markdown(text: str) -> Tuple[List['Block'], List[str], List[str], str]
             if level == 1 and not title_h1:
                 title_h1 = heading_text
             if level == 2:
-                if heading_text.lower() == "actividades":
-                    in_actividades = True
-                else:
-                    in_actividades = False
-                h2_list.append(heading_text)
-            if in_actividades and heading_text.lower() != "actividades":
-                in_actividades = False
+                in_actividades = (heading_text.lower() == "actividades")
             blocks.append(Block(f'h{level}', heading_text))
+            last_line_blank = False
             continue
 
         if in_actividades:
             if line.strip():
                 actividades.append(line.strip())
+            last_line_blank = (line.strip() == "")
             continue
 
         if line.strip() == "":
-            flush_para()
+            if not last_line_blank:
+                flush_para()
+            last_line_blank = True
         else:
             current_para.append(line)
+            last_line_blank = False
 
     flush_para()
-    return blocks, h2_list, actividades, (title_h1 or "")
+    return blocks, actividades, (title_h1 or "")
 
 def clean_inline_md(s: str) -> str:
-    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)  # **negrita**
-    s = re.sub(r'__(.+?)__', r'\1', s)      # __negrita__
+    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+    s = re.sub(r'__(.+?)__', r'\1', s)
     s = s.replace(r'\(', '(').replace(r'\)', ')').replace(r'\*', '*')
-    # Evitar glifos jeroglíficos que no cubre DejaVu Sans:
-    s = re.sub(r'[\U00013000-\U0001342F]', '', s)
+    s = re.sub(r'[\U00013000-\U0001342F]', '', s)  # evita jeroglíficos que faltan en DejaVu
     s = re.sub(r'\s{2,}', ' ', s).strip()
     return s
 
-# --------------------------
-# Imágenes: Unsplash Source + filtro "cómic" con PIL
-# --------------------------
-STOPWORDS_ES = set("""
-un una unas unos uno sobre todo tambien tras otro algun alguno alguna algunos algunas
-ser es soy eres somos sois estoy esta estamos estais estan como en para atras porque por que
-estado estaba ante antes siendo ambos pero por poder puede puedo podemos pueden fui fue fuimos
-fueron hacer hago hace hacemos hacen cada fin incluso primero desde conseguir consigo consigue
-consigues conseguimos consiguen ir voy va vamos van venir vengo viene venimos vienen
-""".split())
+# ---------- Selección de párrafos clave ----------
+KEYWORDS = ["definición", "concepto", "importante", "clave", "conclusión", "ejemplo", "problema"]
 
-def keywords_from_text(text: str, max_words: int = 6) -> str:
-    # Muy simple: primeras palabras "significativas"
-    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", text)
-    filtered = [t for t in tokens if t.lower() not in STOPWORDS_ES and len(t) > 2]
-    return " ".join(filtered[:max_words]) or "educacion matematica"
+def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
+    """
+    Devuelve el conjunto de índices (en la secuencia 'blocks') de los párrafos más importantes.
+    Criterios: longitud, proximidad a H2/H3, palabras clave.
+    """
+    paragraph_indices = []
+    para_texts = []
+    last_heading_level = None
 
-def fetch_unsplash_image(query: str, width: int = 1024, height: int = 640, timeout: int = 30) -> Optional[Image.Image]:
-    # Unsplash Source devuelve una redirección a una imagen libre de uso (educativo)
-    # https://source.unsplash.com/ (no requiere API key)
-    url = f"https://source.unsplash.com/{width}x{height}/?{requests.utils.quote(query)}"
-    try:
-        r = requests.get(url, timeout=timeout, allow_redirects=True)
-        if r.status_code == 200 and r.content:
-            return Image.open(io.BytesIO(r.content)).convert("RGB")
-    except Exception as e:
-        print(f"[AVISO] Unsplash error: {e}")
-    return None
+    for i, b in enumerate(blocks):
+        if b.type.startswith("h"):
+            last_heading_level = int(b.type[1])
+        elif b.type == "p":
+            paragraph_indices.append(i)
+            para_texts.append((i, b.text, last_heading_level))
 
-def comicize(img: Image.Image) -> Image.Image:
-    # Look tipo cómic: posterize + edges suave
-    base = img.resize((img.width, img.height), Image.LANCZOS)
-    poster = ImageOps.posterize(base, 3)  # pocos niveles de color
-    edges = base.convert("L").filter(ImageFilter.FIND_EDGES)
-    edges = ImageOps.autocontrast(edges).filter(ImageFilter.SMOOTH_MORE)
-    edges_col = ImageOps.colorize(edges, black=(0,0,0), white=(255,255,255))
-    # mezclar: multiplicar bordes suaves sobre poster
-    blended = Image.blend(poster, edges_col, alpha=0.25)
-    return blended
+    scored = []
+    for _, text, hlevel in para_texts:
+        score = 0.0
+        L = len(text)
+        score += min(L / 400.0, 1.5)  # longitud (hasta 1.5)
+        if hlevel in (2, 3):
+            score += 0.6              # primer párrafo tras H2/H3
+        low = text.lower()
+        if any(kw in low for kw in KEYWORDS):
+            score += 0.7              # palabra clave
+        scored.append(score)
 
-class ImageGen:
-    def __init__(self, font_path: Optional[str]=None):
-        self.font_path = font_path
+    ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
+    top_block_idxs = [paragraph_indices[idx] for idx, _ in ranked]
+    top_block_idxs.sort()
+    return set(top_block_idxs)
 
-    def generate(self, prompt: str, width: int = 960, height: int = 600) -> Image.Image:
-        q = keywords_from_text(prompt)
-        img = fetch_unsplash_image(q, width=width, height=height)
-        if img is None:
-            # fallback: tarjeta placeholder agradable
-            return make_placeholder(f"Escena: {q}", size=(width, height), font_path=self.font_path)
-        return comicize(img)
+# ---------- Perfiles demográficos y prompts ----------
 
-# Placeholder bonito si falla todo
-def load_font_for_placeholder(font_path: Optional[str], size: int) -> ImageFont.ImageFont:
-    try:
-        if font_path and os.path.isfile(font_path):
-            return ImageFont.truetype(font_path, size)
-    except Exception:
-        pass
-    return ImageFont.load_default()
+DEMOGRAPHIC_PROFILES = [
+    # Español/a
+    {"origen":"español",       "genero":"chico", "detalle":"pelo corto o rizado, ropa urbana o sudadera/vaqueros"},
+    {"origen":"española",      "genero":"chica", "detalle":"pelo suelto o recogido, ropa casual o deportiva"},
+    # Marroquí
+    {"origen":"marroquí",      "genero":"chico", "detalle":"pelo corto o rizado, ropa cotidiana juvenil; sin estereotipos"},
+    {"origen":"marroquí",      "genero":"chica", "detalle":"pelo suelto o recogido; hiyab opcional y respetuoso; ropa cotidiana juvenil"},
+    # Subsahariano/a
+    {"origen":"subsahariano",  "genero":"chico", "detalle":"pelo corto o trenzas cortas, ropa casual juvenil"},
+    {"origen":"subsahariana",  "genero":"chica", "detalle":"trenzas o afro, ropa casual juvenil"},
+]
 
-def make_placeholder(prompt: str, size=(768, 480), bg=(14, 18, 32), fg=(233, 238, 248), font_path: Optional[str]=None) -> Image.Image:
-    img = Image.new("RGB", size, bg)
-    draw = ImageDraw.Draw(img)
-    title = "Ilustración tipo cómic"
-    body = textwrap.shorten(prompt.replace("\n", " "), width=200, placeholder="…")
-    font_title = load_font_for_placeholder(font_path, 32)
-    font_body = load_font_for_placeholder(font_path, 20)
-    tw, th = draw.textbbox((0, 0), title, font=font_title)[2:]
-    bw, bh = draw.textbbox((0, 0), body, font=font_body)[2:]
-    W, H = img.size
-    y0 = (H - (th + 18 + bh)) // 2
-    draw.text(((W - tw)//2, y0), title, font=font_title, fill=fg)
-    draw.text(((W - bw)//2, y0 + th + 18), body, font=font_body, fill=fg)
-    return img
+def next_profiles(idx: int) -> List[dict]:
+    """
+    Devuelve una mezcla de 3 perfiles rotando el pool para diversidad.
+    """
+    base = DEMOGRAPHIC_PROFILES
+    start = (idx * 2) % len(base)
+    sel = [base[start], base[(start+1) % len(base)], base[(start+2) % len(base)]]
+    return sel
 
-# --------------------------
-# PDF con texto rodeando imagen
-# --------------------------
+def build_prompt_demo(paragraph: str, title: str, style: str, perfiles: List[dict]) -> str:
+    """
+    Prompt seguro y neutro para ilustrar adolescentes (12–16) diversos (españoles, marroquíes, subsaharianos).
+    Evita texto/estereotipos/sexualización; contexto escolar/calle; ropa cotidiana.
+    """
+    common = (
+        "Ilustración de adolescentes de 12 a 16 años, sin texto sobreimpreso, sin marcas de agua, sin logos. "
+        "Vestimenta cotidiana (escolar o de calle), sin sexualización, postura natural y respetuosa. "
+        "Evitar estereotipos culturales; representación inclusiva y realista. "
+        "Composición clara y legible centrada en la idea principal del párrafo. "
+    )
+
+    if style == "infografia":
+        style_txt = "Estilo infográfico minimalista, colores planos suaves, iconografía simple, fondo limpio. "
+    elif style == "boceto-pizarra":
+        style_txt = "Estilo boceto/rotulador tipo pizarra, trazos definidos, fondo claro, aspecto didáctico. "
+    elif style == "fotoreal":
+        style_txt = "Estilo fotográfico realista, iluminación suave, profundidad moderada, escena natural. "
+    else:
+        style_txt = "Estilo ilustración contemporánea neutra, colores equilibrados, detalles moderados. "
+
+    mix_txt = []
+    for p in perfiles:
+        mix_txt.append(f"{p['genero']} {p['origen']} ({p['detalle']})")
+    demographic = "Diversidad visible: " + ", ".join(mix_txt) + ". "
+
+    topic = f"Tema: {title}. "
+    # Pedimos que resuma la idea del párrafo (algunos modelos responden mejor si lo incluimos tal cual):
+    content = f"Escena basada en el párrafo (resumir idea principal): {paragraph}"
+
+    return common + style_txt + demographic + topic + content
+
+# ---------- PDF ----------
 class ComicPDF(FPDF):
     def __init__(self, font_path: Optional[str] = None):
         super().__init__(orientation="P", unit="mm", format="A4")
-        # Márgenes suaves
         self.set_margins(18, 18, 18)
         self.set_auto_page_break(auto=True, margin=16)
-        self._font_family = "helvetica"  # fallback ASCII
+        self._font_family = "helvetica"
         self._font_path = font_path
         self._font_ready = False
         self._has_b = self._has_i = self._has_bi = False
@@ -181,9 +195,7 @@ class ComicPDF(FPDF):
         boldital = os.path.join(base_dir, "DejaVuSans-BoldOblique.ttf")
         try:
             if os.path.isfile(reg):
-                self.add_font("DejaVu", style="",  fname=reg)
-                self._font_family = "DejaVu"
-                self._font_ready = True
+                self.add_font("DejaVu", style="",  fname=reg); self._font_family = "DejaVu"; self._font_ready = True
             if os.path.isfile(bold):
                 self.add_font("DejaVu", style="B", fname=bold); self._has_b = True
             if os.path.isfile(ital):
@@ -216,7 +228,7 @@ class ComicPDF(FPDF):
         self.set_text_color(120, 120, 120)
         self.cell(0, 10, f'Página {self.page_no()}', new_x=XPos.RIGHT, new_y=YPos.TOP, align='C')
 
-    def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float) -> Tuple[str, float]:
+    def _pil_to_temp_jpg(self, img, w_mm: float):
         iw, ih = img.size
         h_mm = w_mm * (ih / iw)
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
@@ -225,22 +237,17 @@ class ComicPDF(FPDF):
         img_rgb.save(path, "JPEG", quality=90, optimize=True)
         return path, h_mm
 
-    def flow_paragraph_with_image(self, text: str, img: Image.Image, side: str = "right",
+    def flow_paragraph_with_image(self, text: str, img, side: str = "right",
                                   img_w_mm: float = 70.0, gutter_mm: float = 6.0,
                                   line_h: float = 6.0):
-        """
-        Coloca una imagen a un lado y fluye el texto en el espacio restante,
-        continuando debajo de la imagen si hace falta.
-        """
         text = clean_inline_md(text)
         l, r = self.l_margin, self.r_margin
         usable_w = self.w - l - r
         text_w = usable_w - img_w_mm - gutter_mm
-        if text_w < 48:  # evita columnas demasiado estrechas
+        if text_w < 48:
             text_w = usable_w
             img_w_mm = 0.0
 
-        # Medición (sin deprecations): dry_run=True, output="LINES"
         lines = self.multi_cell(
             text_w if img_w_mm > 0 else usable_w,
             line_h, text, align='J', dry_run=True, output="LINES"
@@ -281,27 +288,67 @@ class ComicPDF(FPDF):
         y_next = max(y_start + img_h, y_text_end) + 4.0
         self.set_xy(l, y_next)
 
-# --------------------------
-# Generador principal
-# --------------------------
-def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: ImageGen, font_path: Optional[str]):
+# ---------- Imagen vía ImageRouter ----------
+def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
+    """
+    Pide la imagen a ImageRouter y usa caché por hash del prompt.
+    Fallo → placeholder seguro (sin texto).
+    """
+    from PIL import Image
+    import hashlib
+
+    h = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+    out_dir = os.path.join(cache_dir, "imagerouter")
+    os.makedirs(out_dir, exist_ok=True)
+    cached = os.path.join(out_dir, f"{h}.png")
+    if os.path.isfile(cached):
+        return Image.open(cached).convert("RGB")
+
+    try:
+        png_real = generate_image_via_imagerouter(
+            prompt=prompt,
+            out_dir=out_dir,
+            model=model,
+            size="1024x768",
+            steps=20,
+            guidance=4.0,
+            seed=None
+        )
+        os.replace(png_real, cached)
+        return Image.open(cached).convert("RGB")
+    except Exception as e:
+        print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
+        W, H = 1024, 640
+        img = Image.new("RGB", (W, H), (14, 18, 32))
+        draw = ImageDraw.Draw(img)
+        txt = " "
+        draw.text((24, 24), txt, fill=(233, 238, 248))
+        return img
+
+# ---------- Generador principal ----------
+def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
+                      font_path: Optional[str], model: str, style: str, max_images: int):
+    # Leer MD
     with open(md_path, "r", encoding="utf-8") as f:
         text = f.read()
 
-    blocks, h2_list, actividades, title_h1 = parse_markdown(text)
+    blocks, actividades, title_h1 = parse_markdown(text)
     filename_title = os.path.splitext(os.path.basename(md_path))[0]
     title = title_h1 or filename_title
 
-    # Portada
-    portada_prompt = f"Portada educativa estilo cómic, limpia, con símbolos numéricos sutiles (sin texto sobreimpreso). Título: {title}"
-    cover_img = gen.generate(portada_prompt, width=1280, height=720)
+    cache_dir = os.path.join(output_folder, "_cache_imgs")
+
+    # Portada (ya muestra diversidad también)
+    portada_perfiles = next_profiles(0)
+    portada_prompt = build_prompt_demo("Portada del documento", title, style=style, perfiles=portada_perfiles)
+    portada_img = obtener_imagen(portada_prompt, cache_dir, model=model)
 
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
-    pdf.set_author("MathGym / José Luis Cantón")
+    pdf.set_author("Proyecto educativo")
 
     pdf.add_page()
-    path_tmp, _ = pdf._pil_to_temp_jpg(cover_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
+    path_tmp, _ = pdf._pil_to_temp_jpg(portada_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
     pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
     try: os.remove(path_tmp)
     except Exception: pass
@@ -309,18 +356,17 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
     pdf.header_title(title)
     pdf.use_font(size=12)
 
-    # Imágenes integradas: hasta 6 párrafos, alternando lado
-    paragraphs = [b.text for b in blocks if b.type == "p"]
-    max_imgs = 6
-    img_paras_idx = [i for i in range(min(max_imgs, len(paragraphs)))]
-    side = "right"
+    # Elegimos los párrafos clave
+    top_block_idxs = select_key_paragraphs(blocks, max_images=max_images)
 
-    p_counter = 0
-    for b in blocks:
+    side = "right"
+    img_counter = 1  # 0 ya usado por portada
+
+    for idx, b in enumerate(blocks):
         if b.type.startswith("h"):
             level = int(b.type[1])
             if level == 2 and b.text.strip().lower() == "actividades":
-                continue  # H2 "Actividades" va en su propia página
+                continue
             if level == 2:
                 pdf.use_font(style="B", size=16)
                 pdf.set_text_color(200, 30, 30)
@@ -337,15 +383,16 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, gen: 
 
         if b.type == "p":
             text_clean = clean_inline_md(b.text)
-            if p_counter in img_paras_idx:
-                prompt = f"Escena: {text_clean}"
-                img = gen.generate(prompt, width=960, height=600)
+            if idx in top_block_idxs:
+                perfiles = next_profiles(img_counter)
+                prompt = build_prompt_demo(text_clean, title, style=style, perfiles=perfiles)
+                img = obtener_imagen(prompt, cache_dir, model=model)
                 pdf.flow_paragraph_with_image(text_clean, img, side=side, img_w_mm=70.0)
                 side = "left" if side == "right" else "right"
+                img_counter += 1
             else:
                 pdf.multi_cell(0, 6, text_clean, align='J')
                 pdf.ln(2)
-            p_counter += 1
 
     if actividades:
         pdf.add_page()
@@ -375,16 +422,21 @@ def listar_md(input_folder: str) -> List[str]:
     return sorted(out)
 
 def main():
-    parser = argparse.ArgumentParser(description="Genera PDFs tipo cómic a partir de Markdown con imágenes integradas (sin GPU)")
+    parser = argparse.ArgumentParser(description="Genera PDFs con imágenes integradas (ImageRouter, párrafos clave y diversidad)")
     parser.add_argument("--input-folder", default="historias", help="Carpeta base de entrada")
     parser.add_argument("--output-folder", default="pdfs_generados", help="Carpeta base de salida")
+    parser.add_argument("--model", default=os.getenv("IMAGEROUTER_MODEL", "black-forest-labs/FLUX-1-schnell:free"),
+                        help="Modelo en ImageRouter (p.ej. 'stabilityai/sdxl-turbo:free')")
+    parser.add_argument("--style", default=os.getenv("PROMPT_STYLE", "neutral"),
+                        choices=["neutral", "infografia", "boceto-pizarra", "fotoreal"],
+                        help="Estilo del prompt")
+    parser.add_argument("--max-images", type=int, default=int(os.getenv("MAX_IMAGES", "4")),
+                        help="Número de párrafos importantes a ilustrar")
     args = parser.parse_args()
 
     font_path = os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     if not os.path.isfile(font_path):
         print(f"[AVISO] Fuente Unicode no encontrada en {font_path}. Se usará Helvetica (ASCII).")
-
-    gen = ImageGen(font_path=font_path)
 
     md_list = listar_md(args.input_folder)
     print(f"📄 MD a procesar: {len(md_list)}")
@@ -394,7 +446,15 @@ def main():
 
     for md in md_list:
         try:
-            generar_pdf_de_md(md, args.input_folder, args.output_folder, gen, font_path=font_path)
+            generar_pdf_de_md(
+                md,
+                args.input_folder,
+                args.output_folder,
+                font_path=font_path,
+                model=args.model,
+                style=args.style,
+                max_images=args.max_images
+            )
         except Exception as e:
             print(f"❌ Error procesando {md}: {e}")
 
