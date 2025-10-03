@@ -1,18 +1,18 @@
-name: Generar PDFs tipo cómic (imágenes reales integradas, sin GPU)
+name: Generar PDFs con imágenes (ImageRouter)
 
 on:
   push:
     paths:
       - 'historias/*.md'
       - 'historias/**/*.md'
-      - 'scripts/generar_pdfs_comic.py'
+      - 'scripts/**'
       - '.github/workflows/generar-pdfs-comic.yml'
       - 'requirements.txt'
 
 jobs:
   generar_pdfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -36,31 +36,31 @@ jobs:
           sudo apt-get install -y fonts-dejavu-core
           fc-list | grep -i DejaVuSans || true
 
-      - name: Generar PDFs
+      - name: Generar PDFs (toda la carpeta historias)
         env:
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+          IMAGEROUTER_BASE_URL: ${{ vars.IMAGEROUTER_BASE_URL }}
+          IMAGEROUTER_API_KEY:  ${{ secrets.IMAGEROUTER_API_KEY }}
+          PROMPT_STYLE: neutral         # neutral | infografia | boceto-pizarra | fotoreal
+          MAX_IMAGES: '4'               # nº de párrafos importantes a ilustrar
+          IMAGEROUTER_MODEL: "black-forest-labs/FLUX-1-schnell:free"
         run: |
           mkdir -p pdfs_generados
-          python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
+          python scripts/generar_pdfs_comic.py \
+            --input-folder historias \
+            --output-folder pdfs_generados
 
       - name: Listar PDFs generados
-        id: listpdfs
         run: |
-          echo "Contenido de pdfs_generados/:"
-          ls -la pdfs_generados || true
-          echo "Listado recursivo de PDFs:"
+          echo "Listado:"
           find pdfs_generados -type f -name '*.pdf' -print || true
-          COUNT=$(find pdfs_generados -type f -name '*.pdf' 2>/dev/null | wc -l || true)
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
 
       - name: Subir PDFs como artefacto
-        if: steps.listpdfs.outputs.count != '0'
         uses: actions/upload-artifact@v4
         with:
           name: pdfs-comic
           path: |
-            pdfs_generados/*.pdf
             pdfs_generados/**/*.pdf
+            pdfs_generados/*.pdf
           if-no-files-found: error
-
 
