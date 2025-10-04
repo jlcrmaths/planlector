@@ -1,3 +1,4 @@
+```yaml
 name: Generar PDFs con imágenes (Runware)
 
 on:
@@ -44,7 +45,6 @@ jobs:
           sudo apt-get install -y fonts-dejavu-core
           fc-list | grep -i DejaVuSans || true
 
-      # --- Sanity check opcional: verifica Runware antes de los PDFs ---
       - name: Sanity • Generar UNA imagen con Runware
         env:
           RUNWARE_API_URL: https://api.runware.ai/v1
@@ -78,22 +78,14 @@ PY
       - name: Generar PDFs (toda la carpeta historias)
         env:
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-
-          # Proveedor: RUNWARE
           IMAGEROUTER_PROVIDER: runware
           RUNWARE_API_URL: https://api.runware.ai/v1
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
-          RUNWARE_MODEL: runware:101@1   # cambia si quieres SDXL/FLUX/etc.
-
+          RUNWARE_MODEL: runware:101@1
           PROMPT_STYLE: neutral
           MAX_IMAGES: '4'
-
-          # (Opcional) sólo texto si necesitas saltarte imágenes
-          # NO_IMAGES: '1'
         run: |
           mkdir -p pdfs_generados
-          # Limpieza opcional de caché de pruebas antiguas:
-          # rm -rf pdfs_generados/_cache_imgs/imagerouter || true
           python scripts/generar_pdfs_comic.py \
             --input-folder historias \
             --output-folder pdfs_generados
@@ -110,3 +102,4 @@ PY
             pdfs_generados/**/*.pdf
             pdfs_generados/*.pdf
           if-no-files-found: error
+```
