@@ -1,4 +1,4 @@
-name: Generar PDFs con imágenes (AI Horde - gratis)
+name: Generar PDFs con imágenes (Runware)
 
 on:
   push:
@@ -26,17 +26,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Preflight: API viva
-      - name: Preflight • AI Horde status
-        run: |
-          set -e
-          code=$(curl -s -o /dev/null -w "%{http_code}" https://aihorde.net/api/v2/status/performance || true)
-          echo "AI Horde /status/performance → HTTP $code"
-          if [ "$code" != "200" ]; then
-            echo "::error title=AI Horde no disponible::La API no responde 200."
-            exit 1
-          fi
-
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
@@ -55,33 +44,62 @@ jobs:
           sudo apt-get install -y fonts-dejavu-core
           fc-list | grep -i DejaVuSans || true
 
+      # --- Sanity check opcional: verifica Runware antes de los PDFs ---
+      - name: Sanity • Generar UNA imagen con Runware
+        env:
+          RUNWARE_API_URL: https://api.runware.ai/v1
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
+        run: |
+          python - << 'PY'
+import os, uuid, json, requests, sys
+API=os.getenv("RUNWARE_API_URL","https://api.runware.ai/v1")
+KEY=os.getenv("RUNWARE_API_KEY","").strip()
+if not KEY:
+    print("::error ::Falta RUNWARE_API_KEY (secret)."); sys.exit(1)
+task={
+  "taskType":"imageInference",
+  "taskUUID":str(uuid.uuid4()),
+  "outputType":"URL",
+  "outputFormat":"JPG",
+  "positivePrompt":"Ilustración educativa sencilla sobre números naturales; estilo infográfico, sin texto sobreimpreso",
+  "model":"runware:101@1",
+  "width": 768, "height": 512,
+  "steps": 8, "numberResults": 1, "CFGScale": 7.0
+}
+r=requests.post(API, headers={"Authorization":f"Bearer {KEY}","Content-Type":"application/json"},
+                data=json.dumps([task]), timeout=120)
+r.raise_for_status()
+data=r.json().get("data") or []
+if not data or not data[0].get("imageURL"):
+    print("::error ::Runware sin imageURL en respuesta."); sys.exit(1)
+print("OK: Runware responde y devuelve imageURL")
+PY
+
       - name: Generar PDFs (toda la carpeta historias)
         env:
-          # Tipografías y controles de generación
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+
+          # Proveedor: RUNWARE
+          IMAGEROUTER_PROVIDER: runware
+          RUNWARE_API_URL: https://api.runware.ai/v1
+          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
+          RUNWARE_MODEL: runware:101@1   # cambia si quieres SDXL/FLUX/etc.
+
           PROMPT_STYLE: neutral
           MAX_IMAGES: '4'
 
-          # --- Proveedor gratis: AI Horde ---
-          IMAGEROUTER_PROVIDER: aihorde
-          IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
-          # Puedes usar '0000000000' si no pones secret; mejor crear un secret con tu key.
-          IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}
-          IMAGEROUTER_MODEL: "aihorde"
-
-          # (Opcional) endurecer CI para fallar si hubiera bloqueo/errores
-          # FAIL_ON_IMAGEROUTER_ERROR: '1'
-          # (Opcional) generar PDF solo texto (sin llamadas a la API)
+          # (Opcional) sólo texto si necesitas saltarte imágenes
           # NO_IMAGES: '1'
         run: |
           mkdir -p pdfs_generados
+          # Limpieza opcional de caché de pruebas antiguas:
+          # rm -rf pdfs_generados/_cache_imgs/imagerouter || true
           python scripts/generar_pdfs_comic.py \
             --input-folder historias \
             --output-folder pdfs_generados
 
       - name: Listar PDFs generados
         run: |
-          echo "Listado:"
           find pdfs_generados -type f -name '*.pdf' -print || true
 
       - name: Subir PDFs como artefacto
@@ -92,5 +110,3 @@ jobs:
             pdfs_generados/**/*.pdf
             pdfs_generados/*.pdf
           if-no-files-found: error
-
-
