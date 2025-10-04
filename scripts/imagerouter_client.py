@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cliente mínimo para un endpoint OpenAI-compatible (ImageRouter).
-Genera una imagen a partir de un prompt y la guarda en disco.
+Cliente multiproveedor:
+- openai  -> /v1/images/generations (routers OpenAI-style)
+- huggingface -> Inference API (bytes)
+- aihorde -> API pública gratuita (voluntariado)
 
-Requiere:
-  - IMAGEROUTER_BASE_URL (env): p.ej. https://<tu-router>
-    *Puede ser raíz (https://host) o ya incluir /v1 o /v1/openai*
-  - IMAGEROUTER_API_KEY  (env): API key si la instancia la pide (opcional)
-  - IMAGEROUTER_IMAGES_ENDPOINT (env, opcional):
-      Ruta del endpoint de imágenes si quieres forzarla.
-      Ejemplos: 
-        "/v1/images/generations" (por defecto)
-        "/v1/openai/images/generations"
-        "images/generations" (sin barra inicial)
+Selecciona con IMAGEROUTER_PROVIDER = openai | huggingface | aihorde
 """
 
 import os
@@ -22,51 +15,103 @@ import base64
 import json
 import pathlib
 from typing import Optional
-
 import requests
 
+class ImageRouterError(Exception): ...
+class ImageRouterBillingRequired(ImageRouterError): ...
 
-class ImageRouterError(Exception):
-    pass
-
-
-def _rand_name(n=8) -> str:
+def _rand_name(n=8)->str:
     import secrets, string
     alphabet = string.ascii_lowercase + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(n))
 
+# ---------- OpenAI-style ----------
+def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int) -> bytes:
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+    if resp.status_code == 403:
+        try:
+            data = resp.json(); msg = (data.get("error",{}).get("message") or "")[:500]
+        except Exception:
+            msg = resp.text[:500]
+        if "deposit" in msg.lower():
+            raise ImageRouterBillingRequired(msg)
+    if resp.status_code >= 400:
+        raise ImageRouterError(f"HTTP {resp.status_code} en {endpoint}: {resp.text[:500]}")
+    data = resp.json()
+    if "data" in data and data["data"]:
+        entry = data["data"][0]
+        if entry.get("b64_json"):
+            return base64.b64decode(entry["b64_json"])
+        if entry.get("url"):
+            r = requests.get(entry["url"], timeout=timeout)
+            r.raise_for_status()
+            return r.content
+    raise ImageRouterError("Respuesta sin imagen reconocible (OpenAI-style).")
 
-def _join_url(base: str, path: str) -> str:
-    base = base.rstrip('/')
-    if not path:
-        return base
-    if path.startswith('/'):
-        return base + path
-    return base + '/' + path
+# ---------- Hugging Face (bytes) ----------
+def _post_hf_bytes(endpoint: str, api_key: str, prompt: str, timeout: int) -> bytes:
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {"inputs": prompt}
+    resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+    if resp.status_code in (503, 524):  # warming-up / edge timeout
+        time.sleep(2)
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
+    if resp.status_code >= 400:
+        raise ImageRouterError(f"HF HTTP {resp.status_code} en {endpoint}: {resp.text[:500]}")
+    return resp.content
 
-
-def _resolve_images_endpoint(base_url: str) -> str:
-    """Resuelve el endpoint final de imágenes evitando duplicados.
-    Estrategia:
-      1) Si IMAGEROUTER_IMAGES_ENDPOINT está definido => usarlo literalmente sobre base_url.
-      2) Si base_url ya termina en '/images/generations' => usar base_url tal cual.
-      3) Si base_url contiene '/v1/openai' => añadir '/images/generations'.
-      4) Si base_url contiene '/v1' => añadir '/images/generations'.
-      5) En cualquier otro caso => añadir '/v1/images/generations'.
+# ---------- AI Horde (gratis) ----------
+def _post_aihorde(prompt: str, api_key: str, width: int, height: int, steps: int, timeout: int) -> bytes:
     """
-    forced = os.getenv('IMAGEROUTER_IMAGES_ENDPOINT', '').strip()
-    if forced:
-        return _join_url(base_url, forced)
+    Flujo asíncrono usando el SDK oficial: txt2img_request -> poll -> status -> primera generación.
+    Más info: endpoints /v2/generate/async, /v2/generate/check, /v2/generate/status.  # [3](https://github.com/Haidra-Org/AI-Horde/blob/main/README_integration.md)[4](https://github.com/sigaloid/stablehorde-api)
+    El servicio permite clave anónima 0000000000 (menor prioridad).  # [1](https://stablehorde.net/)
+    """
+    from horde_sdk import HordeClient
+    from horde_sdk.ai_horde_api.apis.tags import text_to_image_api
+    from horde_sdk.ai_horde_api.models import (
+        GenerationInput, ModelGenerationInputStable
+    )
 
-    low = base_url.rstrip('/').lower()
-    if low.endswith('/images/generations'):
-        return base_url.rstrip('/')
-    if '/v1/openai' in low:
-        return _join_url(base_url, '/images/generations')
-    if '/v1' in low:
-        return _join_url(base_url, '/images/generations')
-    return _join_url(base_url, '/v1/images/generations')
+    client = HordeClient(api_key=api_key or "0000000000", client_agent="MathGym/1.0")
 
+    gen_params = ModelGenerationInputStable(
+        width=width, height=height, steps=max(1, min(steps, 20)), cfg_scale=5.0
+    )
+    payload = GenerationInput(
+        prompt=prompt,
+        params=gen_params,
+        n=1,             # 1 imagen por petición
+        r2=True,         # permitir URLs R2 cuando aplique
+        censor_nsfw=True,
+        nsfw=False
+    )
+
+    # 1) Encolar petición
+    req = text_to_image_api.txt2img_request.sync(client, request_body=payload)
+    req_id = req.id
+
+    # 2) Polling suave hasta done
+    t0 = time.time()
+    while True:
+        chk = text_to_image_api.generate_check.sync(client, id=req_id)
+        if getattr(chk, "done", 0) == 1:
+            break
+        if time.time() - t0 > timeout:
+            raise ImageRouterError("AI Horde: timeout esperando la generación.")
+        time.sleep(2)
+
+    # 3) Recuperar generaciones y decodificar la primera
+    st = text_to_image_api.generate_status.sync(client, id=req_id)
+    gens = getattr(st, "generations", None) or []
+    if not gens:
+        raise ImageRouterError("AI Horde: sin generaciones en la respuesta.")
+    # Cada item suele traer base64 en 'img'
+    b64 = gens[0].img
+    return base64.b64decode(b64)
 
 def generate_image_via_imagerouter(
     prompt: str,
@@ -74,87 +119,43 @@ def generate_image_via_imagerouter(
     model: str = "black-forest-labs/FLUX-1-schnell:free",
     size: str = "1024x768",
     guidance: float = 4.0,
-    steps: int = 20,
+    steps: int = 12,
     seed: Optional[int] = None,
-    timeout: int = 120
+    timeout: int = 180,
 ) -> str:
-    """
-    Llama a un endpoint OpenAI-style y guarda un PNG/JPG en out_dir.
-    Devuelve la ruta final creada.
-
-    Ajusta 'model' a otro gratuito si lo prefieres (p.ej. "stabilityai/sdxl-turbo:free"),
-    según la lista de modelos de la instancia que uses.
-    """
     base_url = os.getenv("IMAGEROUTER_BASE_URL", "").rstrip("/")
-    api_key = os.getenv("IMAGEROUTER_API_KEY", "")
-    if not base_url:
-        raise ImageRouterError("Falta IMAGEROUTER_BASE_URL (variable de entorno).")
+    api_key  = os.getenv("IMAGEROUTER_API_KEY", "")
+    provider = os.getenv("IMAGEROUTER_PROVIDER", "openai").strip().lower()
 
-    endpoint = _resolve_images_endpoint(base_url)
+    pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
+    out_path = str(pathlib.Path(out_dir, f"img_{_rand_name()}.png"))
 
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if provider == "aihorde":
+        # size "WxH"
+        try:
+            w, h = map(int, size.lower().split("x"))
+        except Exception:
+            w, h = 1024, 768
+        img_bytes = _post_aihorde(prompt=prompt, api_key=api_key or "0000000000",
+                                  width=w, height=h, steps=steps, timeout=timeout)
+        with open(out_path, "wb") as f:
+            f.write(img_bytes)
+        return out_path
 
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "size": size,
-        "n": 1,
-        # Campos que algunas pasarelas aceptan:
-        "guidance_scale": guidance,
-        "steps": steps,
-    }
+    if provider == "huggingface":
+        if not base_url:
+            raise ImageRouterError("Falta IMAGEROUTER_BASE_URL para Hugging Face.")
+        img_bytes = _post_hf_bytes(base_url, api_key, prompt, timeout)
+        with open(out_path, "wb") as f:
+            f.write(img_bytes)
+        return out_path
+
+    # Por defecto: OpenAI-style
+    endpoint = base_url if base_url.endswith("/images/generations") else f"{base_url}/v1/images/generations"
+    payload = {"model": model, "prompt": prompt, "size": size, "n": 1, "guidance_scale": guidance, "steps": steps}
     if seed is not None:
         payload["seed"] = seed
-
-    # Backoff suave para 429/5xx
-    backoff = [0, 1, 2, 4]
-    last_exc = None
-    for wait in backoff:
-        if wait:
-            time.sleep(wait)
-        try:
-            resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
-            if resp.status_code == 429:
-                last_exc = ImageRouterError(f"Rate limit 429 en {endpoint}: {resp.text[:200]}")
-                continue
-            if 500 <= resp.status_code < 600:
-                last_exc = ImageRouterError(f"Upstream {resp.status_code} en {endpoint}: {resp.text[:200]}")
-                continue
-            if resp.status_code >= 400:
-                # Mensaje explícito con el endpoint real usado (para depurar 404)
-                raise ImageRouterError(f"HTTP {resp.status_code} en {endpoint}: {resp.text[:500]}")
-
-            data = resp.json()
-            # OpenAI images: data[0].b64_json o data[0].url
-            img_b64 = None
-            img_url = None
-            if "data" in data and data["data"]:
-                entry = data["data"][0]
-                img_b64 = entry.get("b64_json")
-                img_url = entry.get("url")
-
-            pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
-            fname = f"img_{_rand_name()}.png"
-            out_path = str(pathlib.Path(out_dir, fname))
-
-            if img_b64:
-                with open(out_path, "wb") as f:
-                    f.write(base64.b64decode(img_b64))
-                return out_path
-
-            if img_url:
-                r = requests.get(img_url, timeout=timeout)
-                r.raise_for_status()
-                with open(out_path, "wb") as f:
-                    f.write(r.content)
-                return out_path
-
-            raise ImageRouterError(f"Respuesta sin imagen reconocible en {endpoint}: {json.dumps(data)[:800]}")
-
-        except requests.RequestException as e:
-            last_exc = e
-            continue
-
-    raise ImageRouterError(f"No se pudo generar imagen tras reintentos: {last_exc}")
+    img_bytes = _post_openai_images(endpoint, api_key, payload, timeout)
+    with open(out_path, "wb") as f:
+        f.write(img_bytes)
+    return out_path
