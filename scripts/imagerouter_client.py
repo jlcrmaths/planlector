@@ -27,6 +27,8 @@ import json
 import pathlib
 from typing import Optional
 import requests
+from io import BytesIO
+from PIL import Image
 
 
 class ImageRouterError(Exception):
@@ -72,6 +74,23 @@ def _bytes_from_img_field(value: str, timeout: int) -> bytes:
     return base64.b64decode(value)
 
 
+def _ensure_png(img_bytes: bytes) -> bytes:
+    """
+    Abre los bytes con PIL (soporta jpg/webp/png/…), y devuelve PNG bytes.
+    Si no se puede abrir, retorna los bytes tal cual.
+    """
+    try:
+        im = Image.open(BytesIO(img_bytes))
+        # Convertimos a RGB para compatibilidad
+        if im.mode not in ("RGB", "L", "P", "RGBA"):
+            im = im.convert("RGB")
+        buf = BytesIO()
+        im.convert("RGB").save(buf, "PNG")
+        return buf.getvalue()
+    except Exception:
+        return img_bytes
+
+
 # ---------- OpenAI-style ----------
 def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int) -> bytes:
     headers = {"Content-Type": "application/json"}
@@ -96,11 +115,11 @@ def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int
     if "data" in data and data["data"]:
         entry = data["data"][0]
         if entry.get("b64_json"):
-            return base64.b64decode(entry["b64_json"])
+            return _ensure_png(base64.b64decode(entry["b64_json"]))
         if entry.get("url"):
             r = requests.get(entry["url"], timeout=timeout)
             r.raise_for_status()
-            return r.content
+            return _ensure_png(r.content)
 
     raise ImageRouterError("Respuesta sin imagen reconocible (OpenAI-style).")
 
@@ -120,7 +139,7 @@ def _post_hf_bytes(endpoint: str, api_key: str, prompt: str, timeout: int) -> by
     if resp.status_code >= 400:
         raise ImageRouterError(f"HF HTTP {resp.status_code} en {endpoint}: {resp.text[:500]}")
 
-    return resp.content
+    return _ensure_png(resp.content)
 
 
 # ---------- AI Horde (HTTP directo, gratis) ----------
@@ -138,7 +157,7 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str,
     Flujo oficial (asincrónico) de AI Horde:
       POST  {base}/generate/async      -> id
       GET   {base}/generate/check/{id} -> done?
-      GET   {base}/generate/status/{id}-> generations[0].img (que puede ser URL o base64)
+      GET   {base}/generate/status/{id}-> generations[0].img (URL o base64)
 
     Doc integración (endpoints /async, /check, /status):
       https://github.com/Haidra-Org/AI-Horde/blob/main/README_integration.md
@@ -152,7 +171,7 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str,
         "Client-Agent": os.getenv("CLIENT_AGENT", "MathGym/1.0 (+https://github.com/mathgymdcr)")
     }
 
-    # Las resoluciones suelen funcionar mejor en múltiplos de 64
+    # Resoluciones en múltiplos de 64
     w = _nearest_multiple_64(max(64, min(width, 1536)))
     h = _nearest_multiple_64(max(64, min(height, 1536)))
 
@@ -161,12 +180,11 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str,
         "params": {
             "width": w,
             "height": h,
-            "steps": max(1, min(steps, 20)),  # mantener bajo para colas rápidas
+            "steps": max(1, min(steps, 20)),  # menos pasos = menos cola
             "cfg_scale": 5.0
         },
         "n": 1,
-        # Si r2=True el 'img' puede llegar como URL (R2). Lo soportamos.
-        "r2": True,
+        "r2": True,          # 'img' puede llegar como URL (R2) → soportado
         "nsfw": False,
         "censor_nsfw": True
     }
@@ -206,7 +224,8 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str,
     if not img_field:
         raise ImageRouterError("AI Horde: 'generations[0].img' vacío.")
 
-    return _bytes_from_img_field(img_field, timeout)
+    raw = _bytes_from_img_field(img_field, timeout)
+    return _ensure_png(raw)
 
 
 def generate_image_via_imagerouter(
@@ -257,4 +276,3 @@ def generate_image_via_imagerouter(
     img_bytes = _post_openai_images(endpoint, api_key, payload, timeout)
     with open(out_path, "wb") as f:
         f.write(img_bytes)
-    return out_path
