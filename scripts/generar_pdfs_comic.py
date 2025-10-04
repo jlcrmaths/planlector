@@ -10,6 +10,7 @@ from typing import List, Optional, Set, Tuple
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 from PIL import Image, ImageDraw
+
 # --- Robustez de imports: permite ejecutar con `python scripts/...` o `python -m scripts...`
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
@@ -19,11 +20,10 @@ if str(HERE) not in sys.path:
 if str(PARENT) not in sys.path:
     sys.path.insert(0, str(PARENT))
 try:
-    # Ejecutando como script: python scripts/generar_pdfs_comic.py
-    from imagerouter_client import generate_image_via_imagerouter, ImageRouterError
+    from imagerouter_client import generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired
 except ModuleNotFoundError:
-    # Ejecutando como módulo: python -m scripts.generar_pdfs_comic
-    from scripts.imagerouter_client import generate_image_via_imagerouter, ImageRouterError
+    from scripts.imagerouter_client import generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired
+
 # ---------- Parsing MD muy simple ----------
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 
@@ -122,13 +122,13 @@ def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
         if any(kw in low for kw in KEYWORDS):
             score += 0.7  # palabra clave
 
-        # --- Penalizaciones adicionales ---
+        # Penalizaciones: texto corto, listas, código
         if len(text.strip()) < 80:
             score -= 0.6
         if re.match(r'^\s*([-*+]|\d+\.)\s+', text):
-            score -= 0.8  # listas
+            score -= 0.8
         if "```" in text or re.search(r'`{1,3}', text):
-            score -= 1.0  # código en línea o bloque
+            score -= 1.0
 
         scored.append(score)
 
@@ -137,7 +137,7 @@ def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
     top_block_idxs.sort()
     return set(top_block_idxs)
 
-# ---------- Perfiles demográficos y prompts ----------
+# ---------- Perfiles demográficos y prompt ----------
 DEMOGRAPHIC_PROFILES = [
     # Español/a
     {"origen": "español", "genero": "chico", "detalle": "pelo corto o rizado, ropa urbana o sudadera/vaqueros"},
@@ -151,7 +151,6 @@ DEMOGRAPHIC_PROFILES = [
 ]
 
 def next_profiles(idx: int) -> List[dict]:
-    """Devuelve una mezcla de 3 perfiles rotando el pool para diversidad."""
     base = DEMOGRAPHIC_PROFILES
     start = (idx * 2) % len(base)
     sel = [base[start], base[(start + 1) % len(base)], base[(start + 2) % len(base)]]
@@ -159,8 +158,7 @@ def next_profiles(idx: int) -> List[dict]:
 
 def build_prompt_demo(paragraph: str, title: str, style: str, perfiles: List[dict]) -> str:
     """
-    Prompt seguro y neutro para ilustrar adolescentes (12–16) diversos (españoles, marroquíes, subsaharianos).
-    Evita texto/estereotipos/sexualización; contexto escolar/calle; ropa cotidiana.
+    Prompt seguro y neutro para ilustrar adolescentes (12–16) diversos.
     """
     common = (
         "Ilustración de adolescentes de 12 a 16 años, sin texto sobreimpreso, sin marcas de agua, sin logos. "
@@ -179,14 +177,10 @@ def build_prompt_demo(paragraph: str, title: str, style: str, perfiles: List[dic
     else:
         style_txt = "Estilo ilustración contemporánea neutra, colores equilibrados, detalles moderados. "
 
-    mix_txt = []
-    for p in perfiles:
-        mix_txt.append(f"{p['genero']} {p['origen']} ({p['detalle']})")
+    mix_txt = [f"{p['genero']} {p['origen']} ({p['detalle']})" for p in perfiles]
     demographic = "Diversidad visible: " + ", ".join(mix_txt) + ". "
-
     topic = f"Tema: {title}. "
     content = f"Escena basada en el párrafo (resumir idea principal): {paragraph}"
-
     return common + style_txt + demographic + topic + content
 
 # ---------- PDF ----------
@@ -229,14 +223,11 @@ class ComicPDF(FPDF):
         if self._font_family.lower() == "dejavu":
             up = "".join(sorted(set(style.upper())))
             if up == "BI" and self._has_bi:
-                self.set_font("DejaVu", style="BI", size=size)
-                return
+                self.set_font("DejaVu", style="BI", size=size); return
             if up == "B" and self._has_b:
-                self.set_font("DejaVu", style="B", size=size)
-                return
+                self.set_font("DejaVu", style="B", size=size); return
             if up == "I" and self._has_i:
-                self.set_font("DejaVu", style="I", size=size)
-                return
+                self.set_font("DejaVu", style="I", size=size); return
             self.set_font("DejaVu", style="", size=size)
         else:
             self.set_font(self._font_family, style="", size=size)
@@ -302,10 +293,8 @@ class ComicPDF(FPDF):
                 x_img = l
                 x_text = l + img_w_mm + gutter_mm
             self.image(img_path, x=x_img, y=y_start, w=img_w_mm)
-            try:
-                os.remove(img_path)
-            except Exception:
-                pass
+            try: os.remove(img_path)
+            except Exception: pass
         else:
             x_text = l
             text_w = usable_w
@@ -319,13 +308,12 @@ class ComicPDF(FPDF):
 # ---------- Imagen vía ImageRouter ----------
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
     """
-    Pide la imagen a ImageRouter y usa caché por hash del prompt.
-    Semilla determinista derivada del prompt para reproducibilidad.
-    Fallo → placeholder seguro (sin texto).
+    Pide la imagen al proveedor y usa caché por hash del prompt.
+    Semilla determinista derivada del prompt (para proveedores que la soporten).
+    Fallo → placeholder seguro.
     """
     from PIL import Image
     import hashlib
-    import json
     from datetime import datetime
 
     hfull = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -341,7 +329,7 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
         except Exception:
             pass  # regenerará
 
-    # Semilla determinista (2^31-1)
+    # Semilla determinista (si el proveedor la soporta)
     seed = int(hfull, 16) % 2_147_483_647
 
     try:
@@ -350,7 +338,7 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
             out_dir=out_dir,
             model=model,
             size="1024x768",
-            steps=20,
+            steps=12,
             guidance=4.0,
             seed=seed,
         )
@@ -360,21 +348,23 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
             "prompt": prompt,
             "model": model,
             "size": "1024x768",
-            "steps": 20,
+            "steps": 12,
             "guidance": 4.0,
             "seed": seed,
             "created_at": datetime.utcnow().isoformat() + "Z",
             "hash": hfull,
         }
         try:
+            import json as _json
             with open(cached_meta, "w", encoding="utf-8") as mf:
-                import json as _json
                 _json.dump(meta, mf, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
         return Image.open(cached_png).convert("RGB")
 
+    except ImageRouterBillingRequired as e:
+        raise
     except Exception as e:
         print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
         W, H = 1024, 640
@@ -386,43 +376,45 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
 
 # ---------- Generador principal ----------
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
-                      font_path: Optional[str], model: str, style: str, max_images: int):
-    # Leer MD
+                      font_path: Optional[str], model: str, style: str, max_images: int,
+                      no_images: bool = False, fail_on_router_error: bool = False):
     with open(md_path, "r", encoding="utf-8") as f:
         text = f.read()
 
     blocks, actividades, title_h1 = parse_markdown(text)
     filename_title = os.path.splitext(os.path.basename(md_path))[0]
     title = title_h1 or filename_title
-
     cache_dir = os.path.join(output_folder, "_cache_imgs")
-
-    # Portada (ya muestra diversidad también)
-    portada_perfiles = next_profiles(0)
-    portada_prompt = build_prompt_demo("Portada del documento", title, style=style, perfiles=portada_perfiles)
-    portada_img = obtener_imagen(portada_prompt, cache_dir, model=model)
 
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
     pdf.set_author("Proyecto educativo")
     pdf.add_page()
 
-    path_tmp, _ = pdf._pil_to_temp_jpg(portada_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
-    pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
-    try:
-        os.remove(path_tmp)
-    except Exception:
-        pass
-
+    # Portada
+    if not no_images:
+        try:
+            portada_perfiles = next_profiles(0)
+            portada_prompt = build_prompt_demo("Portada del documento", title, style=style, perfiles=portada_perfiles)
+            portada_img = obtener_imagen(portada_prompt, cache_dir, model=model)
+            path_tmp, _ = pdf._pil_to_temp_jpg(portada_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
+            pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
+            os.remove(path_tmp)
+        except ImageRouterBillingRequired as e:
+            msg = f"⛔ ImageRouter requiere depósito/activación: {e}"
+            if fail_on_router_error:
+                raise SystemExit(msg)
+            else:
+                print(msg)
+                # Portada sin imagen
     pdf.ln(5)
     pdf.header_title(title)
     pdf.use_font(size=12)
 
-    # Elegimos los párrafos clave
     top_block_idxs = select_key_paragraphs(blocks, max_images=max_images)
-
     side = "right"
-    img_counter = 1  # 0 ya usado por portada
+    img_counter = 1
+    billing_blocked = False
 
     for idx, b in enumerate(blocks):
         if b.type.startswith("h"):
@@ -445,16 +437,24 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
 
         if b.type == "p":
             text_clean = clean_inline_md(b.text)
-            if idx in top_block_idxs:
-                perfiles = next_profiles(img_counter)
-                prompt = build_prompt_demo(text_clean, title, style=style, perfiles=perfiles)
-                img = obtener_imagen(prompt, cache_dir, model=model)
-                pdf.flow_paragraph_with_image(text_clean, img, side=side, img_w_mm=70.0)
-                side = "left" if side == "right" else "right"
-                img_counter += 1
+            if idx in top_block_idxs and not no_images and not billing_blocked:
+                try:
+                    perfiles = next_profiles(img_counter)
+                    prompt = build_prompt_demo(text_clean, title, style=style, perfiles=perfiles)
+                    img = obtener_imagen(prompt, cache_dir, model=model)
+                    pdf.flow_paragraph_with_image(text_clean, img, side=side, img_w_mm=70.0)
+                    side = "left" if side == "right" else "right"
+                    img_counter += 1
+                except ImageRouterBillingRequired as e:
+                    msg = f"⛔ ImageRouter requiere depósito/activación: {e}"
+                    if fail_on_router_error:
+                        raise SystemExit(msg)
+                    else:
+                        print(msg)
+                        billing_blocked = True
+                        pdf.multi_cell(0, 6, text_clean, align='J'); pdf.ln(2)
             else:
-                pdf.multi_cell(0, 6, text_clean, align='J')
-                pdf.ln(2)
+                pdf.multi_cell(0, 6, text_clean, align='J'); pdf.ln(2)
 
     if actividades:
         pdf.add_page()
@@ -475,6 +475,7 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
     pdf.output(output_pdf)
     print(f"✅ PDF generado: {output_pdf}")
 
+
 def listar_md(input_folder: str) -> List[str]:
     out = []
     for root, _, files in os.walk(input_folder):
@@ -483,31 +484,26 @@ def listar_md(input_folder: str) -> List[str]:
                 out.append(os.path.join(root, fn))
     return sorted(out)
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Genera PDFs con imágenes integradas (ImageRouter, párrafos clave y diversidad 12–16)"
-    )
-    parser.add_argument("--input-folder", default="historias", help="Carpeta base de entrada")
-    parser.add_argument("--output-folder", default="pdfs_generados", help="Carpeta base de salida")
-    parser.add_argument(
-        "--model",
-        default=os.getenv("IMAGEROUTER_MODEL", "black-forest-labs/FLUX-1-schnell:free"),
-        help="Modelo en ImageRouter (p.ej. 'stabilityai/sdxl-turbo:free')"
-    )
-    parser.add_argument(
-        "--style",
-        default=os.getenv("PROMPT_STYLE", "neutral"),
-        choices=["neutral", "infografia", "boceto-pizarra", "fotoreal"],
-        help="Estilo del prompt"
-    )
-    parser.add_argument(
-        "--max-images",
-        type=int,
-        default=int(os.getenv("MAX_IMAGES", "4")),
-        help="Número de párrafos importantes a ilustrar"
-    )
+    parser = argparse.ArgumentParser(description="Genera PDFs con imágenes integradas (ImageRouter, selección de párrafos)")
+    parser.add_argument("--input-folder", default="historias")
+    parser.add_argument("--output-folder", default="pdfs_generados")
+    parser.add_argument("--model", default=os.getenv("IMAGEROUTER_MODEL", "aihorde"))
+    parser.add_argument("--style", default=os.getenv("PROMPT_STYLE", "neutral"),
+                        choices=["neutral", "infografia", "boceto-pizarra", "fotoreal"])
+    parser.add_argument("--max-images", type=int, default=int(os.getenv("MAX_IMAGES", "4")))
+    parser.add_argument("--no-images", action="store_true", help="No llamar al generador de imágenes (PDF solo texto)")
+    parser.add_argument("--fail-on-router-error", action="store_true", help="Abortar si el proveedor devuelve error de cuota/billing")
 
     args = parser.parse_args()
+
+    # Flags desde entorno para control CI
+    no_images_env = os.getenv("NO_IMAGES", "0")
+    fail_env = os.getenv("FAIL_ON_IMAGEROUTER_ERROR", "0")
+
+    no_images = args.no_images or (no_images_env == "1")
+    fail_on_router_error = args.fail_on_router_error or (fail_env == "1")
 
     font_path = os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
     if not os.path.isfile(font_path):
@@ -520,18 +516,18 @@ def main():
         return
 
     for md in md_list:
-        try:
-            generar_pdf_de_md(
-                md,
-                args.input_folder,
-                args.output_folder,
-                font_path=font_path,
-                model=args.model,
-                style=args.style,
-                max_images=args.max_images
-            )
-        except Exception as e:
-            print(f"❌ Error procesando {md}: {e}")
+        generar_pdf_de_md(
+            md,
+            args.input_folder,
+            args.output_folder,
+            font_path=font_path,
+            model=args.model,
+            style=args.style,
+            max_images=args.max_images,
+            no_images=no_images,
+            fail_on_router_error=fail_on_router_error,
+        )
+
 
 if __name__ == "__main__":
     main()
