@@ -11,13 +11,13 @@ Proveedores soportados (vía variable de entorno IMAGEROUTER_PROVIDER):
 ENV requeridas (según proveedor):
   IMAGEROUTER_PROVIDER = aihorde | huggingface | openai
   IMAGEROUTER_BASE_URL = 
-      aihorde:  https://aihorde.net/api/v2
+      aihorde:     https://aihorde.net/api/v2
       huggingface: https://api-inference.huggingface.co/models/<model_id>
-      openai:   https://<router>   (el cliente añade /v1/images/generations si falta)
+      openai:      https://<router>   (el cliente añade /v1/images/generations si falta)
   IMAGEROUTER_API_KEY  =
-      aihorde:  tu key o '0000000000' (anónimo, funciona con menor prioridad)
+      aihorde:     tu key o '0000000000' (anónimo, funciona con menor prioridad)
       huggingface: token 'hf_...'
-      openai:   token del router (si aplica)
+      openai:      token del router (si aplica)
 """
 
 import os
@@ -43,6 +43,35 @@ def _rand_name(n=8) -> str:
     return ''.join(secrets.choice(alphabet) for _ in range(n))
 
 
+# ---------- Utilidades ----------
+def _bytes_from_img_field(value: str, timeout: int) -> bytes:
+    """
+    Devuelve bytes de imagen a partir de:
+      - URL (http/https): descarga
+      - data URL (data:image/...;base64,....): recorta prefijo y decodifica
+      - base64 'crudo' (sin prefijo)
+    """
+    if not value:
+        raise ImageRouterError("Campo 'img' vacío en generación de AI Horde.")
+
+    low = value.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        r = requests.get(value, timeout=timeout)
+        r.raise_for_status()
+        return r.content
+
+    if low.startswith("data:image/"):
+        # data:image/webp;base64,<...>
+        try:
+            b64 = value.split(",", 1)[1]
+        except Exception:
+            raise ImageRouterError("data URL inválida en 'img'.")
+        return base64.b64decode(b64)
+
+    # Base64 crudo
+    return base64.b64decode(value)
+
+
 # ---------- OpenAI-style ----------
 def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int) -> bytes:
     headers = {"Content-Type": "application/json"}
@@ -52,7 +81,6 @@ def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int
     resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
 
     if resp.status_code == 403:
-        # Algunos routers retornan un mensaje pidiendo depósito
         try:
             data = resp.json()
             msg = (data.get("error", {}).get("message") or "")[:500]
@@ -101,7 +129,6 @@ def _nearest_multiple_64(x: int) -> int:
         return 64
     lo = (x // 64) * 64
     hi = lo + 64
-    # elegir el más cercano
     return hi if (x - lo) > (hi - x) else lo
 
 
@@ -111,15 +138,13 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str,
     Flujo oficial (asincrónico) de AI Horde:
       POST  {base}/generate/async      -> id
       GET   {base}/generate/check/{id} -> done?
-      GET   {base}/generate/status/{id}-> generations[0].img (base64)
-    Cabeceras requeridas: 'apikey' y se recomienda 'Client-Agent'.
+      GET   {base}/generate/status/{id}-> generations[0].img (que puede ser URL o base64)
 
     Doc integración (endpoints /async, /check, /status):
       https://github.com/Haidra-Org/AI-Horde/blob/main/README_integration.md
     Servicio y key anónima '0000000000' (10 ceros) disponible:
-      https://stablehorde.net / https://aihorde.net
+      https://aihorde.net
     """
-
     base = base_url.rstrip('/') or "https://aihorde.net/api/v2"
     key = api_key or "0000000000"  # anónimo permitido (menor prioridad)
     headers = {
@@ -140,10 +165,10 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str,
             "cfg_scale": 5.0
         },
         "n": 1,
-        "r2": True,          # permitir URLs R2 si aplica (optimiza entrega)
+        # Si r2=True el 'img' puede llegar como URL (R2). Lo soportamos.
+        "r2": True,
         "nsfw": False,
         "censor_nsfw": True
-        # "models": ["Deliberate"]  # opcional: dejar que Horde elija el modelo disponible
     }
 
     # 1) Encolar
@@ -174,10 +199,14 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str,
         raise ImageRouterError(f"AI Horde status HTTP {rs.status_code}: {rs.text[:300]}")
     st = rs.json()
     gens = st.get("generations") or []
-    if not gens or not gens[0].get("img"):
-        raise ImageRouterError("AI Horde: sin 'generations' o 'img' en la respuesta.")
-    b64 = gens[0]["img"]
-    return base64.b64decode(b64)
+    if not gens:
+        raise ImageRouterError("AI Horde: sin 'generations' en la respuesta.")
+
+    img_field = gens[0].get("img") or ""
+    if not img_field:
+        raise ImageRouterError("AI Horde: 'generations[0].img' vacío.")
+
+    return _bytes_from_img_field(img_field, timeout)
 
 
 def generate_image_via_imagerouter(
@@ -187,14 +216,14 @@ def generate_image_via_imagerouter(
     size: str = "1024x768",
     guidance: float = 4.0,
     steps: int = 12,
-    seed: Optional[int] = None,
+    seed: Optional[int] = None,   # No usado por Horde, pero se mantiene para compatibilidad
     timeout: int = 180
 ) -> str:
     """
     Devuelve la RUTA de un PNG guardado en out_dir.
     """
     base_url = os.getenv("IMAGEROUTER_BASE_URL", "").rstrip("/")
-    api_key = os.getenv("IMAGEROUTER_API_KEY", "")
+    api_key  = os.getenv("IMAGEROUTER_API_KEY", "")
     provider = os.getenv("IMAGEROUTER_PROVIDER", "aihorde").strip().lower()
 
     pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
