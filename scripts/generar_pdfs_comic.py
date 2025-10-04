@@ -180,7 +180,7 @@ def build_prompt_demo(paragraph: str, title: str, style: str, perfiles: List[dic
     mix_txt = [f"{p['genero']} {p['origen']} ({p['detalle']})" for p in perfiles]
     demographic = "Diversidad visible: " + ", ".join(mix_txt) + ". "
     topic = f"Tema: {title}. "
-    content = f"Escena basada en el párrafo (resumir idea principal): {paragraph}"
+    content = f"Escena basada en la idea principal del párrafo: {paragraph}"
     return common + style_txt + demographic + topic + content
 
 # ---------- PDF ----------
@@ -323,13 +323,14 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
     cached_png = os.path.join(out_dir, f"{h}.png")
     cached_meta = os.path.join(out_dir, f"{h}.json")
 
+    # Si el PNG existe pero está corrupto, lo reescribimos
     if os.path.isfile(cached_png):
         try:
             return Image.open(cached_png).convert("RGB")
         except Exception:
-            pass  # regenerará
+            try: os.remove(cached_png)
+            except Exception: pass
 
-    # Semilla determinista (si el proveedor la soporta)
     seed = int(hfull, 16) % 2_147_483_647
 
     try:
@@ -342,7 +343,14 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
             guidance=4.0,
             seed=seed,
         )
-        os.replace(png_real, cached_png)
+        # Sustituye el temporal por la ruta de caché
+        try:
+            os.replace(png_real, cached_png)
+        except Exception:
+            # Si ya venía con el nombre, copiamos bytes
+            if not os.path.isfile(cached_png):
+                import shutil
+                shutil.copyfile(png_real, cached_png)
 
         meta = {
             "prompt": prompt,
@@ -391,15 +399,23 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
     pdf.set_author("Proyecto educativo")
     pdf.add_page()
 
-    # Portada
+    # --- PORTADA: colocar imagen a todo el ancho y AVANZAR el cursor ---
     if not no_images:
         try:
             portada_perfiles = next_profiles(0)
             portada_prompt = build_prompt_demo("Portada del documento", title, style=style, perfiles=portada_perfiles)
             portada_img = obtener_imagen(portada_prompt, cache_dir, model=model)
-            path_tmp, _ = pdf._pil_to_temp_jpg(portada_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
-            pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
-            os.remove(path_tmp)
+
+            img_w = (pdf.w - pdf.l_margin - pdf.r_margin)
+            y0 = pdf.get_y()
+            path_tmp, h_mm = pdf._pil_to_temp_jpg(portada_img, w_mm=img_w)
+            pdf.image(path_tmp, x=pdf.l_margin, y=y0, w=img_w)
+            try: os.remove(path_tmp)
+            except Exception: pass
+
+            # AVANZAR cursor por debajo de la imagen + pequeño margen
+            pdf.set_y(y0 + h_mm + 5)
+
         except ImageRouterBillingRequired as e:
             msg = f"⛔ ImageRouter requiere depósito/activación: {e}"
             if fail_on_router_error:
@@ -407,7 +423,8 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
             else:
                 print(msg)
                 # Portada sin imagen
-    pdf.ln(5)
+
+    # Título
     pdf.header_title(title)
     pdf.use_font(size=12)
 
@@ -527,6 +544,10 @@ def main():
             no_images=no_images,
             fail_on_router_error=fail_on_router_error,
         )
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
