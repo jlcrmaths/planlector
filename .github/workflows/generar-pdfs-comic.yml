@@ -40,29 +40,29 @@ jobs:
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
         run: |
           python - << 'PY'
-import os, uuid, json, requests, sys
-API=os.getenv("RUNWARE_API_URL","https://api.runware.ai/v1")
-KEY=os.getenv("RUNWARE_API_KEY","").strip()
-if not KEY:
-    print("::error ::Falta RUNWARE_API_KEY (secret)"); sys.exit(1)
-task={
-  "taskType":"imageInference",
-  "taskUUID":str(uuid.uuid4()),
-  "outputType":"URL",
-  "outputFormat":"JPG",
-  "positivePrompt":"Ilustración educativa simple sobre números naturales; estilo infográfico, sin texto sobreimpreso",
-  "model":"runware:101@1",
-  "width": 768, "height": 512,
-  "steps": 8, "numberResults": 1, "CFGScale": 7.0
-}
-r=requests.post(API, headers={"Authorization":f"Bearer {KEY}","Content-Type":"application/json"},
-                data=json.dumps([task]), timeout=120)
-r.raise_for_status()
-data=r.json().get("data") or []
-if not data or not data[0].get("imageURL"):
-    print("::error ::Runware sin imageURL en respuesta"); sys.exit(1)
-print("OK: Runware responde")
-PY
+          import os, uuid, json, requests, sys
+          API=os.getenv("RUNWARE_API_URL","https://api.runware.ai/v1")
+          KEY=os.getenv("RUNWARE_API_KEY","").strip()
+          if not KEY:
+              print("::error ::Falta RUNWARE_API_KEY (secret)"); sys.exit(1)
+          task={
+            "taskType":"imageInference",
+            "taskUUID":str(uuid.uuid4()),
+            "outputType":"URL",
+            "outputFormat":"JPG",
+            "positivePrompt":"Ilustración educativa simple sobre números naturales; estilo infográfico, sin texto sobreimpreso",
+            "model":"runware:101@1",
+            "width": 768, "height": 512,
+            "steps": 8, "numberResults": 1, "CFGScale": 7.0
+          }
+          r=requests.post(API, headers={"Authorization":f"Bearer {KEY}","Content-Type":"application/json"},
+                          data=json.dumps([task]), timeout=120)
+          r.raise_for_status()
+          data=r.json().get("data") or []
+          if not data or not data[0].get("imageURL"):
+              print("::error ::Runware sin imageURL en respuesta"); sys.exit(1)
+          print("OK: Runware responde")
+          PY
 
       - name: Generar PDFs (toda la carpeta historias)
         env:
