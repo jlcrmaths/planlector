@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 import os
 import re
 import sys
 import argparse
-import textwrap
 import tempfile
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
-
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 from PIL import Image, ImageDraw
-
 # --- Robustez de imports: permite ejecutar con `python scripts/...` o `python -m scripts...`
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
@@ -22,23 +18,19 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 if str(PARENT) not in sys.path:
     sys.path.insert(0, str(PARENT))
-
 try:
     # Ejecutando como script: python scripts/generar_pdfs_comic.py
     from imagerouter_client import generate_image_via_imagerouter, ImageRouterError
 except ModuleNotFoundError:
     # Ejecutando como módulo: python -m scripts.generar_pdfs_comic
     from scripts.imagerouter_client import generate_image_via_imagerouter, ImageRouterError
-
-
 # ---------- Parsing MD muy simple ----------
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 
 @dataclass
 class Block:
-    type: str   # 'h1'..'h6' o 'p'
+    type: str  # 'h1'..'h6' o 'p'
     text: str
-
 
 def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
     """
@@ -92,7 +84,6 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
     flush_para()
     return blocks, actividades, (title_h1 or "")
 
-
 def clean_inline_md(s: str) -> str:
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
     s = re.sub(r'__(.+?)__', r'\1', s)
@@ -101,19 +92,17 @@ def clean_inline_md(s: str) -> str:
     s = re.sub(r'\s{2,}', ' ', s).strip()
     return s
 
-
 # ---------- Selección de párrafos clave ----------
 KEYWORDS = ["definición", "concepto", "importante", "clave", "conclusión", "ejemplo", "problema"]
-
 
 def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
     """
     Devuelve el conjunto de índices (en la secuencia 'blocks') de los párrafos más importantes.
-    Criterios: longitud, proximidad a H2/H3, palabras clave.
+    Criterios: longitud, proximidad a H2/H3, palabras clave, y penalización de listas/código.
     """
     paragraph_indices = []
     para_texts = []
-    last_heading_level = None
+    last_heading_level: Optional[int] = None
 
     for i, b in enumerate(blocks):
         if b.type.startswith("h"):
@@ -122,16 +111,25 @@ def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
             paragraph_indices.append(i)
             para_texts.append((i, b.text, last_heading_level))
 
-    scored = []
+    scored: List[float] = []
     for _, text, hlevel in para_texts:
         score = 0.0
         L = len(text)
         score += min(L / 400.0, 1.5)  # longitud (hasta 1.5)
         if hlevel in (2, 3):
-            score += 0.6              # primer párrafo tras H2/H3
+            score += 0.6  # primer párrafo tras H2/H3
         low = text.lower()
         if any(kw in low for kw in KEYWORDS):
-            score += 0.7              # palabra clave
+            score += 0.7  # palabra clave
+
+        # --- Penalizaciones adicionales ---
+        if len(text.strip()) < 80:
+            score -= 0.6
+        if re.match(r'^\s*([-*+]|\d+\.)\s+', text):
+            score -= 0.8  # listas
+        if "```" in text or re.search(r'`{1,3}', text):
+            score -= 1.0  # código en línea o bloque
+
         scored.append(score)
 
     ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
@@ -139,30 +137,25 @@ def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
     top_block_idxs.sort()
     return set(top_block_idxs)
 
-
 # ---------- Perfiles demográficos y prompts ----------
 DEMOGRAPHIC_PROFILES = [
     # Español/a
-    {"origen": "español",      "genero": "chico", "detalle": "pelo corto o rizado, ropa urbana o sudadera/vaqueros"},
-    {"origen": "española",     "genero": "chica", "detalle": "pelo suelto o recogido, ropa casual o deportiva"},
+    {"origen": "español", "genero": "chico", "detalle": "pelo corto o rizado, ropa urbana o sudadera/vaqueros"},
+    {"origen": "española", "genero": "chica", "detalle": "pelo suelto o recogido, ropa casual o deportiva"},
     # Marroquí
-    {"origen": "marroquí",     "genero": "chico", "detalle": "pelo corto o rizado, ropa cotidiana juvenil; sin estereotipos"},
-    {"origen": "marroquí",     "genero": "chica", "detalle": "pelo suelto o recogido; hiyab opcional y respetuoso; ropa cotidiana juvenil"},
+    {"origen": "marroquí", "genero": "chico", "detalle": "pelo corto o rizado, ropa cotidiana juvenil; sin estereotipos"},
+    {"origen": "marroquí", "genero": "chica", "detalle": "pelo suelto o recogido; hiyab opcional y respetuoso; ropa cotidiana juvenil"},
     # Subsahariano/a
     {"origen": "subsahariano", "genero": "chico", "detalle": "pelo corto o trenzas cortas, ropa casual juvenil"},
     {"origen": "subsahariana", "genero": "chica", "detalle": "trenzas o afro, ropa casual juvenil"},
 ]
 
-
 def next_profiles(idx: int) -> List[dict]:
-    """
-    Devuelve una mezcla de 3 perfiles rotando el pool para diversidad.
-    """
+    """Devuelve una mezcla de 3 perfiles rotando el pool para diversidad."""
     base = DEMOGRAPHIC_PROFILES
     start = (idx * 2) % len(base)
     sel = [base[start], base[(start + 1) % len(base)], base[(start + 2) % len(base)]]
     return sel
-
 
 def build_prompt_demo(paragraph: str, title: str, style: str, perfiles: List[dict]) -> str:
     """
@@ -173,6 +166,7 @@ def build_prompt_demo(paragraph: str, title: str, style: str, perfiles: List[dic
         "Ilustración de adolescentes de 12 a 16 años, sin texto sobreimpreso, sin marcas de agua, sin logos. "
         "Vestimenta cotidiana (escolar o de calle), sin sexualización, postura natural y respetuosa. "
         "Evitar estereotipos culturales; representación inclusiva y realista. "
+        "Sin violencia, sin armas, sin símbolos políticos o religiosos explícitos; enfoque educativo y cotidiano. "
         "Composición clara y legible centrada en la idea principal del párrafo. "
     )
 
@@ -195,7 +189,6 @@ def build_prompt_demo(paragraph: str, title: str, style: str, perfiles: List[dic
 
     return common + style_txt + demographic + topic + content
 
-
 # ---------- PDF ----------
 class ComicPDF(FPDF):
     def __init__(self, font_path: Optional[str] = None):
@@ -209,8 +202,8 @@ class ComicPDF(FPDF):
         self._init_fonts()
 
     def _init_fonts(self):
-        base_dir = os.path.dirname(self._font_path) if (self._font_path and os.path.isfile(self._font_path)) \
-            else "/usr/share/fonts/truetype/dejavu"
+        base_dir = os.path.dirname(self._font_path) if (self._font_path and os.path.isfile(self._font_path)) else \
+            "/usr/share/fonts/truetype/dejavu"
         reg = os.path.join(base_dir, "DejaVuSans.ttf")
         bold = os.path.join(base_dir, "DejaVuSans-Bold.ttf")
         ital = os.path.join(base_dir, "DejaVuSans-Oblique.ttf")
@@ -266,8 +259,8 @@ class ComicPDF(FPDF):
         h_mm = w_mm * (ih / iw)
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             path = tmp.name
-        img_rgb = img.convert("RGB")
-        img_rgb.save(path, "JPEG", quality=90, optimize=True)
+            img_rgb = img.convert("RGB")
+            img_rgb.save(path, "JPEG", quality=90, optimize=True)
         return path, h_mm
 
     def flow_paragraph_with_image(self, text: str, img, side: str = "right",
@@ -323,22 +316,33 @@ class ComicPDF(FPDF):
         y_next = max(y_start + img_h, y_text_end) + 4.0
         self.set_xy(l, y_next)
 
-
 # ---------- Imagen vía ImageRouter ----------
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
     """
     Pide la imagen a ImageRouter y usa caché por hash del prompt.
+    Semilla determinista derivada del prompt para reproducibilidad.
     Fallo → placeholder seguro (sin texto).
     """
     from PIL import Image
     import hashlib
+    import json
+    from datetime import datetime
 
-    h = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+    hfull = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    h = hfull[:16]
     out_dir = os.path.join(cache_dir, "imagerouter")
     os.makedirs(out_dir, exist_ok=True)
-    cached = os.path.join(out_dir, f"{h}.png")
-    if os.path.isfile(cached):
-        return Image.open(cached).convert("RGB")
+    cached_png = os.path.join(out_dir, f"{h}.png")
+    cached_meta = os.path.join(out_dir, f"{h}.json")
+
+    if os.path.isfile(cached_png):
+        try:
+            return Image.open(cached_png).convert("RGB")
+        except Exception:
+            pass  # regenerará
+
+    # Semilla determinista (2^31-1)
+    seed = int(hfull, 16) % 2_147_483_647
 
     try:
         png_real = generate_image_via_imagerouter(
@@ -348,10 +352,29 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
             size="1024x768",
             steps=20,
             guidance=4.0,
-            seed=None
+            seed=seed,
         )
-        os.replace(png_real, cached)
-        return Image.open(cached).convert("RGB")
+        os.replace(png_real, cached_png)
+
+        meta = {
+            "prompt": prompt,
+            "model": model,
+            "size": "1024x768",
+            "steps": 20,
+            "guidance": 4.0,
+            "seed": seed,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "hash": hfull,
+        }
+        try:
+            with open(cached_meta, "w", encoding="utf-8") as mf:
+                import json as _json
+                _json.dump(meta, mf, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        return Image.open(cached_png).convert("RGB")
+
     except Exception as e:
         print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
         W, H = 1024, 640
@@ -360,7 +383,6 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> "Image.Image":
         # placeholder sin texto
         draw.rectangle([(24, 24), (W - 24, H - 24)], outline=(233, 238, 248), width=2)
         return img
-
 
 # ---------- Generador principal ----------
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
@@ -383,14 +405,15 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
     pdf.set_author("Proyecto educativo")
-
     pdf.add_page()
+
     path_tmp, _ = pdf._pil_to_temp_jpg(portada_img, w_mm=(pdf.w - pdf.l_margin - pdf.r_margin))
     pdf.image(path_tmp, x=pdf.l_margin, y=pdf.get_y(), w=(pdf.w - pdf.l_margin - pdf.r_margin))
     try:
         os.remove(path_tmp)
     except Exception:
         pass
+
     pdf.ln(5)
     pdf.header_title(title)
     pdf.use_font(size=12)
@@ -452,7 +475,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
     pdf.output(output_pdf)
     print(f"✅ PDF generado: {output_pdf}")
 
-
 def listar_md(input_folder: str) -> List[str]:
     out = []
     for root, _, files in os.walk(input_folder):
@@ -460,7 +482,6 @@ def listar_md(input_folder: str) -> List[str]:
             if fn.lower().endswith(".md"):
                 out.append(os.path.join(root, fn))
     return sorted(out)
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -485,6 +506,7 @@ def main():
         default=int(os.getenv("MAX_IMAGES", "4")),
         help="Número de párrafos importantes a ilustrar"
     )
+
     args = parser.parse_args()
 
     font_path = os.getenv("FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
@@ -510,7 +532,6 @@ def main():
             )
         except Exception as e:
             print(f"❌ Error procesando {md}: {e}")
-
 
 if __name__ == "__main__":
     main()
