@@ -36,7 +36,6 @@ jobs:
             echo "::error title=AI Horde no disponible::La API no responde 200."
             exit 1
           fi
-        # /status/performance existe y es público  # [4](https://github.com/sigaloid/stablehorde-api)
 
       - name: Configurar Python
         uses: actions/setup-python@v5
@@ -57,14 +56,23 @@ jobs:
           fc-list | grep -i DejaVuSans || true
 
       - name: Generar PDFs (toda la carpeta historias)
-       env:
-  FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-  IMAGEROUTER_PROVIDER: aihorde
-  IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
-  IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}   # o no lo definas y caerá en 0000000000
-  PROMPT_STYLE: neutral
-  MAX_IMAGES: '4'
-  IMAGEROUTER_MODEL: "aihorde"
+        env:
+          # Tipografías y controles de generación
+          FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+          PROMPT_STYLE: neutral
+          MAX_IMAGES: '4'
+
+          # --- Proveedor gratis: AI Horde ---
+          IMAGEROUTER_PROVIDER: aihorde
+          IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
+          # Puedes usar '0000000000' si no pones secret; mejor crear un secret con tu key.
+          IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}
+          IMAGEROUTER_MODEL: "aihorde"
+
+          # (Opcional) endurecer CI para fallar si hubiera bloqueo/errores
+          # FAIL_ON_IMAGEROUTER_ERROR: '1'
+          # (Opcional) generar PDF solo texto (sin llamadas a la API)
+          # NO_IMAGES: '1'
         run: |
           mkdir -p pdfs_generados
           python scripts/generar_pdfs_comic.py \
@@ -83,5 +91,6 @@ jobs:
           path: |
             pdfs_generados/**/*.pdf
             pdfs_generados/*.pdf
+          if-no-files-found: error
 
 
