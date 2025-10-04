@@ -1,21 +1,3 @@
-name: Descargar scripts_generar_pdfs_comic.py
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  build-zip:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Crear árbol y archivo
-        shell: bash
-        run: |
-          set -e
-          mkdir -p scripts
-          cat > scripts/generar_pdfs_comic.py <<'PY'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
