@@ -57,25 +57,14 @@ jobs:
           fc-list | grep -i DejaVuSans || true
 
       - name: Generar PDFs (toda la carpeta historias)
-        env:
-          FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-
-          # --- Proveedor gratis: AI Horde ---
-          IMAGEROUTER_PROVIDER: aihorde
-          # (para HF u OpenAI-style no se usa)
-          IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
-          # Secret con tu key o usa anónima si no lo pones
-          IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}
-
-          # Tu configuración de estilo
-          PROMPT_STYLE: neutral
-          MAX_IMAGES: '4'
-          IMAGEROUTER_MODEL: "aihorde"   # meramente informativo en logs/trazas
-
-          # (Opcional) endurecer si la cola se satura
-          # FAIL_ON_IMAGEROUTER_ERROR: '1'
-          # (Opcional) PDFs solo texto si prefieres no esperar colas
-          # NO_IMAGES: '1'
+       env:
+  FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+  IMAGEROUTER_PROVIDER: aihorde
+  IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
+  IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}   # o no lo definas y caerá en 0000000000
+  PROMPT_STYLE: neutral
+  MAX_IMAGES: '4'
+  IMAGEROUTER_MODEL: "aihorde"
         run: |
           mkdir -p pdfs_generados
           python scripts/generar_pdfs_comic.py \
