@@ -1,4 +1,4 @@
-name: Generar PDFs con imágenes (ImageRouter)
+name: Generar PDFs con imágenes (AI Horde - gratis)
 
 on:
   push:
@@ -8,15 +8,35 @@ on:
       - 'scripts/**'
       - '.github/workflows/generar-pdfs-comic.yml'
       - 'requirements.txt'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generar-pdfs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   generar_pdfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Preflight: API viva
+      - name: Preflight • AI Horde status
+        run: |
+          set -e
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://aihorde.net/api/v2/status/performance || true)
+          echo "AI Horde /status/performance → HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::error title=AI Horde no disponible::La API no responde 200."
+            exit 1
+          fi
+        # /status/performance existe y es público  # [4](https://github.com/sigaloid/stablehorde-api)
 
       - name: Configurar Python
         uses: actions/setup-python@v5
@@ -39,11 +59,23 @@ jobs:
       - name: Generar PDFs (toda la carpeta historias)
         env:
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-          IMAGEROUTER_BASE_URL: ${{ vars.IMAGEROUTER_BASE_URL }}
-          IMAGEROUTER_API_KEY:  ${{ secrets.IMAGEROUTER_API_KEY }}
-          PROMPT_STYLE: neutral         # neutral | infografia | boceto-pizarra | fotoreal
-          MAX_IMAGES: '4'               # nº de párrafos importantes a ilustrar
-          IMAGEROUTER_MODEL: "black-forest-labs/FLUX-1-schnell:free"
+
+          # --- Proveedor gratis: AI Horde ---
+          IMAGEROUTER_PROVIDER: aihorde
+          # (para HF u OpenAI-style no se usa)
+          IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
+          # Secret con tu key o usa anónima si no lo pones
+          IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}
+
+          # Tu configuración de estilo
+          PROMPT_STYLE: neutral
+          MAX_IMAGES: '4'
+          IMAGEROUTER_MODEL: "aihorde"   # meramente informativo en logs/trazas
+
+          # (Opcional) endurecer si la cola se satura
+          # FAIL_ON_IMAGEROUTER_ERROR: '1'
+          # (Opcional) PDFs solo texto si prefieres no esperar colas
+          # NO_IMAGES: '1'
         run: |
           mkdir -p pdfs_generados
           python scripts/generar_pdfs_comic.py \
@@ -58,9 +90,9 @@ jobs:
       - name: Subir PDFs como artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: pdfs-comic
+          name: pdfs-comic-${{ github.run_number }}-${{ github.sha }}
           path: |
             pdfs_generados/**/*.pdf
             pdfs_generados/*.pdf
-          if-no-files-found: error
+
 
