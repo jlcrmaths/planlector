@@ -9,7 +9,6 @@ from typing import List, Tuple
 import re
 import os
 
-# (El código de importación y configuración de spaCy se mantiene igual)
 USE_SPACY = False
 nlp = None
 try:
@@ -42,7 +41,6 @@ def _top_items(seq: List[str], k: int) -> List[str]:
     from collections import Counter
     return [w for w,_ in Counter(seq).most_common(k)]
 
-# (Las funciones _tokens_heuristic y _tokens_spacy se mantienen igual)
 def _tokens_heuristic(text: str) -> Tuple[List[str], List[str], List[str], List[str]]:
     words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\-']{3,}", text)
     words_lower = [w.lower() for w in words]
@@ -94,11 +92,9 @@ def build_visual_prompt(text: str, doc_title: str = "") -> str:
 
     style = "infografía didáctica minimalista" if len(objects_) >= 3 and not places else "ilustración educativa contemporánea"
 
-    # --- INICIO DE LA MODIFICACIÓN: VOLVEMOS AL ESTILO TELEGRÁFICO ---
     subj_str  = ", ".join(subjects[:2]) if subjects else ""
     verb_str  = ", ".join(verbs[:2])
     main_scene = f"{subj_str} {verb_str}"
-    # --- FIN DE LA MODIFICACIÓN ---
 
     obj_str   = ", ".join(objects_[:4])
     place_str = f" Ambientación: {', '.join(places[:2])}." if places else ""
