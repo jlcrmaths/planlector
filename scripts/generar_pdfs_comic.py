@@ -1,26 +1,6 @@
+# scripts/generar_pdfs_comic.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-scripts/generar_pdfs_comic.py
-
-Genera PDFs a partir de Markdown con imágenes relacionadas automáticamente
-(usando un proveedor de imágenes vía ImageRouter).
-
-- Si existe scripts.prompt_synthesizer.build_visual_prompt, lo usa.
-- Si no existe, activa un fallback heurístico sencillo.
-
-Requisitos mínimos:
-  pip install fpdf2 Pillow
-
-Variables de entorno (ejemplos):
-  FONT_PATH=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-  IMAGEROUTER_PROVIDER=runware
-  RUNWARE_API_URL=https://api.runware.ai/v1
-  RUNWARE_API_KEY=<tu_api_key>
-  IMAGEROUTER_MODEL=runware:101@1
-  RUNWARE_MODEL=runware:101@1
-  MAX_IMAGES=4
-"""
 
 import os
 import re
@@ -69,36 +49,33 @@ try:
 except Exception:
     # Fallback mínimo si no existe scripts/prompt_synthesizer.py
     ABSTRACT = {
-        "idea", "concepto", "teoría", "historia", "cultura", "sistema", "proceso", "método",
-        "información", "cantidad", "tiempo", "serie", "conjunto", "uso", "necesidad",
-        "tecnología", "herramienta", "algoritmo", "posicional", "invención", "viaje",
-        "origen", "números", "matemáticas", "clase", "práctica", "registro"
+        "idea","concepto","teoría","historia","cultura","sistema","proceso","método",
+        "información","cantidad","tiempo","serie","conjunto","uso","necesidad",
+        "tecnología","herramienta","algoritmo","posicional","invención","viaje",
+        "origen","números","matemáticas","clase","práctica","registro"
     }
     NEGATIVE = "watermark, logo, text overlay, subtítulos, texto, marcas de agua, caption, screenshot"
-
     def _clean_text_fallback(s: str) -> str:
         s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
         s = re.sub(r'__(.+?)__', r'\1', s)
         s = s.replace(r'\(', '(').replace(r'\)', ')').replace(r'\*', '*')
         return re.sub(r'\s+', ' ', s).strip()
-
     def build_visual_prompt(text: str, doc_title: str = "") -> str:
         raw = _clean_text_fallback(f"{doc_title}. {text}") if doc_title else _clean_text_fallback(text)
         words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\-']{3,}", raw)
         lower = [w.lower() for w in words]
-        verbs = [w for w in lower if w.endswith(("ar", "er", "ir", "ando", "endo", "iendo", "ado", "ido"))][:2]
+        verbs = [w for w in lower if w.endswith(("ar","er","ir","ando","endo","iendo","ado","ido"))][:2]
         nouns = [w for w in lower if w not in verbs]
         visual = [w for w in nouns if w not in ABSTRACT][:4]
-        places = [w for w in nouns if w in {"egipto", "roma", "india", "babilonia"}][:1]
-        if not verbs:
-            verbs = ["representar"]
-        if not visual:
-            visual = ["elementos clave del tema"]
-        style = "infografía didáctica minimalista" if len(visual) >= 3 and not places else "ilustración educativa contemporánea"
+        places = [w for w in nouns if w in {"egipto","roma","india","babilonia"}][:1]
+        if not verbs: verbs = ["representar"]
+        if not visual: visual = ["elementos clave del tema"]
+        style = "ilustración educativa contemporánea" if places or len(visual) < 3 else "infografía didáctica minimalista"
         place_str = f" Ambientación: {', '.join(places)}." if places else ""
         prompt = (
-            f"{style}, clara y legible, sin texto ni marcas. Enfoque educativo (12–16 años). "
-            f"Escena principal: {' y '.join(visual[:2])} {', '.join(verbs)}. "
+            f"{style}, clara y legible, sin texto ni marcas. "
+            f"Enfoque educativo (12–16 años). "
+            f"Escena principal: {', '.join(visual[:2])} {', '.join(verbs)}. "
             f"Elementos visuales clave: {', '.join(visual)}.{place_str} "
             f"Composición limpia, colores equilibrados, fondo neutro, alta nitidez. "
             f"Evitar: {NEGATIVE}."
@@ -106,7 +83,7 @@ except Exception:
         return re.sub(r"\s{2,}", " ", prompt).strip()
 
 # --------------------------------------------------------------------------------------
-# Parser de Markdown muy simple (encabezados y párrafos)
+# Parser de Markdown simple (H# y párrafos)
 # --------------------------------------------------------------------------------------
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 
@@ -219,7 +196,6 @@ class ComicPDF(FPDF):
         self._init_fonts(font_path)
 
     def _init_fonts(self, font_path: Optional[str]):
-        # Intentar DejaVu si existe en el sistema (mejor soporte Unicode)
         base_dir = os.path.dirname(font_path) if (font_path and os.path.isfile(font_path)) else "/usr/share/fonts/truetype/dejavu"
         try:
             reg = os.path.join(base_dir, "DejaVuSans.ttf")
@@ -272,6 +248,7 @@ class ComicPDF(FPDF):
             text_w = usable_w
             img_w_mm = 0.0
 
+        # Altura estimada del texto (dry_run)
         lines = self.multi_cell(text_w if img_w_mm > 0 else usable_w, line_h, text, align='J', dry_run=True, output="LINES")
         if isinstance(lines, dict) and "lines" in lines:
             lines = lines["lines"]
@@ -303,10 +280,8 @@ class ComicPDF(FPDF):
                 pass
         else:
             x_text = l
-            text_w = usable_w
-
         self.set_xy(x_text, y_start)
-        self.multi_cell(text_w, line_h, text, align='J')
+        self.multi_cell(text_w if img_w_mm > 0 else usable_w, line_h, text, align='J')
         y_text_end = self.get_y()
         y_next = max(y_start + img_h, y_text_end) + 4.0
         self.set_xy(l, y_next)
@@ -322,6 +297,7 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
     os.makedirs(out_dir, exist_ok=True)
     cached_png = os.path.join(out_dir, f"{h}.png")
 
+    # Caché
     if os.path.isfile(cached_png):
         try:
             return Image.open(cached_png).convert("RGB")
@@ -387,6 +363,7 @@ def generar_pdf_de_md(md_path: str,
     pdf.set_author("Proyecto educativo")
     pdf.add_page()
 
+    # Portada con imagen
     if not no_images:
         try:
             portada_prompt = build_visual_prompt("Portada del documento", title)
@@ -407,9 +384,11 @@ def generar_pdf_de_md(md_path: str,
             else:
                 print(msg)
 
+    # Título
     pdf.header_title(title)
     pdf.use_font(size=12)
 
+    # Índices de párrafos a ilustrar
     top_idxs = select_key_paragraphs(blocks, max_images=max_images)
 
     side = "right"
@@ -419,6 +398,7 @@ def generar_pdf_de_md(md_path: str,
         if b.type.startswith("h"):
             level = int(b.type[1])
             if level == 2 and b.text.strip().lower() == "actividades":
+                # Sección de actividades al final
                 continue
             if level == 2:
                 pdf.use_font(style="B", size=16)
@@ -456,6 +436,7 @@ def generar_pdf_de_md(md_path: str,
                 pdf.multi_cell(0, 6, text_clean, align='J')
                 pdf.ln(2)
 
+    # Sección de actividades
     if actividades:
         pdf.add_page()
         pdf.use_font(style="B", size=18)
@@ -476,7 +457,7 @@ def generar_pdf_de_md(md_path: str,
     print(f"✅ PDF generado: {output_pdf}")
 
 # --------------------------------------------------------------------------------------
-# Utilidades
+# Utilidades y main
 # --------------------------------------------------------------------------------------
 def listar_md(input_folder: str) -> List[str]:
     out = []
@@ -486,15 +467,12 @@ def listar_md(input_folder: str) -> List[str]:
                 out.append(os.path.join(root, fn))
     return sorted(out)
 
-# --------------------------------------------------------------------------------------
-# Entrypoint
-# --------------------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Genera PDFs con imágenes (prompts automáticos)")
     parser.add_argument("--input-folder", default="historias")
     parser.add_argument("--output-folder", default="pdfs_generados")
     parser.add_argument("--model", default=os.getenv("IMAGEROUTER_MODEL", os.getenv("RUNWARE_MODEL", "runware:101@1")))
-    parser.add_argument("--max-images", type=int, default=int(os.getenv("MAX_IMAGES", "4")))
+    parser.add_argument("--max-images", type=int, default=int(os.getenv("MAX_IMAGES", "6")))
     parser.add_argument("--no-images", action="store_true")
     parser.add_argument("--fail-on-router-error", action="store_true")
     args = parser.parse_args()
