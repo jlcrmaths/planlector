@@ -21,23 +21,22 @@ for p in (HERE, PARENT):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+# --- ImageRouter client ---
 try:
-    from imagerouter_client import (generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired)
+    from imagerouter_client import generate_image_via_imagerouter
 except ModuleNotFoundError:
-    from scripts.imagerouter_client import (generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired)
+    from scripts.imagerouter_client import generate_image_via_imagerouter
 
+# --- Ultimate Prompt / fallback ---
 try:
     from scripts.prompt_synthesizer import build_visual_prompt
 except Exception:
     def build_visual_prompt(text: str, doc_title: str = "") -> str:
-        # Fallback simple
-        return f"ilustración educativa sobre {doc_title}, elementos visuales: {text[:100]}"
+        return f"educational illustration, child-friendly, bright colors, simple composition, {doc_title}, elements: {text[:100]} --neg text, letters, words, signature, watermark, UI, interface, screenshot, speech bubble, subtitle, logo"
 
-# --- INICIO DE LA REPARACIÓN DEL BUG ---
-
+# --- Markdown parsing ---
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
-# Expresión regular robusta que captura el contenido del prompt
-PROMPT_RE = re.compile(r'')
+PROMPT_RE = re.compile(r'^\s*(?P<prompt>.+?),(?:\s*(realista|fotografía|acción|día soleado|interior|exterior).*)?$')
 
 @dataclass
 class Block:
@@ -59,16 +58,12 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
             current_para = []
 
     for line in lines:
-        # Lógica de parseo robusta para evitar el IndexError
-        m_prompt = PROMPT_RE.search(line)
+        m_prompt = PROMPT_RE.match(line)
         if m_prompt:
             flush_para()
-            # Esta comprobación es la que faltaba: nos aseguramos de que el grupo existe
-            # antes de intentar acceder a él.
-            if m_prompt.groups():
-                prompt_text = (m_prompt.group(1) or "").strip()
-                if prompt_text:
-                    blocks.append(Block('img', prompt_text))
+            prompt_text = (m_prompt.group("prompt") or "").strip()
+            if prompt_text:
+                blocks.append(Block('img', prompt_text))
             continue
 
         m_heading = HEADING_RE.match(line)
@@ -93,8 +88,7 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
     flush_para()
     return blocks, actividades, (title_h1 or "")
 
-# --- FIN DE LA REPARACIÓN DEL BUG ---
-
+# --- Utilities ---
 def clean_inline_md(s: str) -> str:
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
     s = re.sub(r'__(.+?)__', r'\1', s)
@@ -108,6 +102,7 @@ def select_key_paragraphs(blocks: List[Block], max_images: int) -> Set[int]:
     ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
     return set(paragraph_indices[idx] for idx, _ in ranked)
 
+# --- PDF Class ---
 class ComicPDF(FPDF):
     def __init__(self, font_path: Optional[str] = None):
         super().__init__(orientation="P", unit="mm", format="A4")
@@ -140,6 +135,7 @@ class ComicPDF(FPDF):
         self.cell(0, 10, f'Página {self.page_no()}', align='C')
 
     def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float):
+        if isinstance(img, str): img = Image.open(img)
         iw, ih = img.size
         h_mm = w_mm * (ih / iw) if iw else w_mm
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
@@ -150,8 +146,7 @@ class ComicPDF(FPDF):
     def flow_paragraph_with_image(self, text: str, img: Image.Image, side: str):
         l, r = self.l_margin, self.r_margin; usable_w = self.w - l - r
         img_w_mm = 70.0; gutter_mm = 6.0
-        text_w = usable_w - img_w_mm - gutter_mm
-        lines = self.multi_cell(text_w, 6, text, align='J', dry_run=True, output="LINES")
+        lines = self.multi_cell(usable_w - img_w_mm - gutter_mm, 6, text, align='J', dry_run=True, output="LINES")
         text_h = len(lines) * 6
         y_start = self.get_y(); bottom = self.h - self.b_margin
         path_tmp, img_h = self._pil_to_temp_jpg(img, img_w_mm)
@@ -160,15 +155,18 @@ class ComicPDF(FPDF):
         x_text = l if side == "right" else l + img_w_mm + gutter_mm
         self.image(path_tmp, x=x_img, y=y_start, w=img_w_mm)
         self.set_xy(x_text, y_start)
-        self.multi_cell(text_w, 6, text, align='J')
+        self.multi_cell(usable_w - img_w_mm - gutter_mm, 6, text, align='J')
         self.set_y(y_start + max(text_h, img_h) + 4)
         try: os.remove(path_tmp)
         except Exception: pass
 
+# --- Imagenes ---
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
     try:
-        # Llamada simplificada a imagerouter
-        return generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model)
+        result = generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model)
+        if isinstance(result, str):
+            result = Image.open(result)
+        return result
     except Exception as e:
         print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
         W, H = 512, 512
@@ -177,11 +175,13 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
         draw.rectangle([(24, 24), (W - 24, H - 24)], outline=(200, 200, 220), width=2)
         return img
 
+# --- Generación PDF ---
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_path: Optional[str], model: str, max_images: int, no_images: bool, fail_on_router_error: bool):
     with open(md_path, "r", encoding="utf-8") as f: text = f.read()
     blocks, actividades, title_h1 = parse_markdown(text)
     title = title_h1 or os.path.splitext(os.path.basename(md_path))[0]
     cache_dir = os.path.join(output_folder, "_cache_imgs")
+    os.makedirs(cache_dir, exist_ok=True)
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
     pdf.add_page()
@@ -240,6 +240,7 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
     pdf.output(output_pdf)
     print(f"✅ PDF generado: {output_pdf}")
 
+# --- Main ---
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-folder", default="historias")
@@ -260,3 +261,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
