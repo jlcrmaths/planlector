@@ -1,9 +1,9 @@
+# .github/workflows/generar-pdfs-comic.yml
 name: Generar PDFs con imágenes (Runware)
 
 on:
   push:
     paths:
-      - 'historias/*.md'
       - 'historias/**/*.md'
       - 'scripts/**'
       - '.github/workflows/generar-pdfs-comic.yml'
@@ -13,13 +13,12 @@ on:
 jobs:
   generar_pdfs:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -29,42 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Instalar fuente DejaVu (Unicode)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fonts-dejavu-core
-
-      - name: Sanity • Generar UNA imagen con Runware
-        env:
-          RUNWARE_API_URL: https://api.runware.ai/v1
-          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
-        run: |
-          python - << 'PY'
-          import os, uuid, json, requests, sys
-          API=os.getenv("RUNWARE_API_URL","https://api.runware.ai/v1")
-          KEY=os.getenv("RUNWARE_API_KEY","").strip()
-          if not KEY:
-              print("::error ::Falta RUNWARE_API_KEY (secret)"); sys.exit(1)
-          task={
-            "taskType":"imageInference",
-            "taskUUID":str(uuid.uuid4()),
-            "outputType":"URL",
-            "outputFormat":"JPG",
-            "positivePrompt":"Ilustración educativa simple sobre números naturales; estilo infográfico, sin texto sobreimpreso",
-            "model":"runware:101@1",
-            "width": 768, "height": 512,
-            "steps": 8, "numberResults": 1, "CFGScale": 7.0
-          }
-          r=requests.post(API, headers={"Authorization":f"Bearer {KEY}","Content-Type":"application/json"},
-                          data=json.dumps([task]), timeout=120)
-          r.raise_for_status()
-          data=r.json().get("data") or []
-          if not data or not data[0].get("imageURL"):
-              print("::error ::Runware sin imageURL en respuesta"); sys.exit(1)
-          print("OK: Runware responde")
-          PY
-
-      - name: Generar PDFs (toda la carpeta historias)
+      - name: Generar PDFs ilustrados
         env:
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
           IMAGEROUTER_PROVIDER: runware
@@ -72,15 +36,10 @@ jobs:
           RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
           IMAGEROUTER_MODEL: runware:101@1
           RUNWARE_MODEL: runware:101@1
-          PROMPT_STYLE: neutral
-          MAX_IMAGES: '4'
+          MAX_IMAGES: '6'
         run: |
           mkdir -p pdfs_generados
           python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
-
-      - name: Listar PDFs generados
-        run: |
-          find pdfs_generados -type f -name '*.pdf' -print || true
 
       - name: Subir PDFs como artefacto
         uses: actions/upload-artifact@v4
