@@ -1,4 +1,3 @@
-# .github/workflows/generar-pdfs-comic.yml
 name: Generar PDFs (fallback AI Horde)
 
 on:
@@ -35,7 +34,8 @@ jobs:
           # Proveedor gratuito
           IMAGEROUTER_PROVIDER: aihorde
           IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
-          # IMAGEROUTER_API_KEY: ""  # opcional; por defecto usa "0000000000"
+          # La siguiente línea usa el secreto que guardaste en GitHub
+          IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}
           MAX_IMAGES: '4'
         run: |
           mkdir -p pdfs_generados
