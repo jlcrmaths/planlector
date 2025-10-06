@@ -5,6 +5,7 @@ from typing import Optional
 from io import BytesIO
 import requests
 from PIL import Image
+from uuid import uuid4
 
 class ImageRouterError(Exception): pass
 
@@ -31,15 +32,15 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
     payload = {
         "prompt": full_prompt,
         "params": {
-            "sampler_name": "k_dpmpp_2m_sde",  # Sampler de alta calidad
+            "sampler_name": "k_dpmpp_2m_sde",
             "width": width, "height": height,
-            "steps": 30,  # Más pasos para mayor detalle
+            "steps": 30,  # Pasos de alta calidad
             "cfg_scale": 7.5
         },
-        "models": ["AlbedoBase XL (SDXL)"], # Modelo potente
+        # --- CORRECCIÓN: Eliminamos el 'models' que causaba el Error 400 ---
         "n": 1, "r2": True, "nsfw": True, "censor_nsfw": False
     }
-    # --- FIN DE PARÁMETROS ---
+    # --- FIN DE LA CORRECIÓN ---
 
     r = requests.post(f"{base_url.rstrip('/')}/generate/async", headers=headers, json=payload, timeout=timeout)
     r.raise_for_status()
@@ -47,7 +48,7 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
     if not req_id: raise ImageRouterError("AI Horde sin id de petición.")
     t0 = time.time()
     while True:
-        time.sleep(4) # Más tiempo de espera para la generación
+        time.sleep(4)
         rc = requests.get(f"{base_url.rstrip('/')}/generate/check/{req_id}", timeout=timeout)
         rc.raise_for_status()
         status = rc.json()
