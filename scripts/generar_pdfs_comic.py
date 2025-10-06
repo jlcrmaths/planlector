@@ -30,13 +30,13 @@ try:
     from scripts.prompt_synthesizer import build_visual_prompt
 except Exception:
     def build_visual_prompt(text: str, doc_title: str = "") -> str:
-        # Fallback simple si no existe el sintetizador
-        return f"ilustración educativa sobre {doc_title}, elementos visuales clave: {text[:100]}"
+        # Fallback simple
+        return f"ilustración educativa sobre {doc_title}, elementos visuales: {text[:100]}"
 
-# --- INICIO DE LA CORRECCIÓN DEL BUG ---
+# --- INICIO DE LA REPARACIÓN DEL BUG ---
 
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
-# Esta expresión regular es robusta y contiene el grupo de captura (.*?)
+# Expresión regular robusta que captura el contenido del prompt
 PROMPT_RE = re.compile(r'')
 
 @dataclass
@@ -59,15 +59,16 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
             current_para = []
 
     for line in lines:
-        # Usamos re.search, que es más flexible y no exige que la línea entera coincida
+        # Lógica de parseo robusta para evitar el IndexError
         m_prompt = PROMPT_RE.search(line)
         if m_prompt:
             flush_para()
-            # El grupo (1) siempre existirá si hay un match.
-            # Este es el punto que fallaba y que ahora está corregido.
-            prompt_text = m_prompt.group(1).strip()
-            if prompt_text:
-                blocks.append(Block('img', prompt_text))
+            # Esta comprobación es la que faltaba: nos aseguramos de que el grupo existe
+            # antes de intentar acceder a él.
+            if m_prompt.groups():
+                prompt_text = (m_prompt.group(1) or "").strip()
+                if prompt_text:
+                    blocks.append(Block('img', prompt_text))
             continue
 
         m_heading = HEADING_RE.match(line)
@@ -92,7 +93,7 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
     flush_para()
     return blocks, actividades, (title_h1 or "")
 
-# --- FIN DE LA CORRECCIÓN DEL BUG ---
+# --- FIN DE LA REPARACIÓN DEL BUG ---
 
 def clean_inline_md(s: str) -> str:
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
@@ -101,7 +102,6 @@ def clean_inline_md(s: str) -> str:
 
 def select_key_paragraphs(blocks: List[Block], max_images: int) -> Set[int]:
     paragraph_indices = [i for i, b in enumerate(blocks) if b.type == "p"]
-    # (El resto de la lógica de puntuación se mantiene)
     if not paragraph_indices: return set()
     para_texts = [(i, b.text) for i, b in enumerate(blocks) if b.type == "p"]
     scored = [len(text) for _, text in para_texts]
@@ -117,7 +117,6 @@ class ComicPDF(FPDF):
         self._init_fonts(font_path)
 
     def _init_fonts(self, font_path: Optional[str]):
-        # (código sin cambios)
         base_dir = os.path.dirname(font_path) if (font_path and os.path.isfile(font_path)) else "/usr/share/fonts/truetype/dejavu"
         try:
             reg = os.path.join(base_dir, "DejaVuSans.ttf")
@@ -149,7 +148,6 @@ class ComicPDF(FPDF):
         return path, h_mm
 
     def flow_paragraph_with_image(self, text: str, img: Image.Image, side: str):
-        # (código sin cambios)
         l, r = self.l_margin, self.r_margin; usable_w = self.w - l - r
         img_w_mm = 70.0; gutter_mm = 6.0
         text_w = usable_w - img_w_mm - gutter_mm
@@ -169,7 +167,8 @@ class ComicPDF(FPDF):
 
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
     try:
-        return generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model, size="512x512", timeout=600)
+        # Llamada simplificada a imagerouter
+        return generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model)
     except Exception as e:
         print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
         W, H = 512, 512
@@ -191,10 +190,10 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
     has_manual_prompts = bool(manual_prompts_indices)
     
     if not no_images and not has_manual_prompts:
-        # Portada solo si no hay prompts manuales
         img = obtener_imagen(build_visual_prompt("Portada", title), cache_dir, model)
         w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
         path, h = pdf._pil_to_temp_jpg(img, w)
+        if y + h > pdf.h - pdf.b_margin: pdf.add_page(); y = pdf.get_y()
         pdf.image(path, x=pdf.l_margin, y=y, w=w)
         pdf.set_y(y + h + 5)
         try: os.remove(path)
@@ -210,9 +209,9 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
             img = obtener_imagen(b.text, cache_dir, model)
             w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
             path, h = pdf._pil_to_temp_jpg(img, w)
-            if y + h > pdf.h - pdf.b_margin: pdf.add_page()
-            pdf.image(path, x=pdf.l_margin, y=pdf.get_y(), w=w)
-            pdf.set_y(pdf.get_y() + h + 5)
+            if y + h > pdf.h - pdf.b_margin: pdf.add_page(); y = pdf.get_y()
+            pdf.image(path, x=pdf.l_margin, y=y, w=w)
+            pdf.set_y(y + h + 5)
             try: os.remove(path)
             except Exception: pass
             time.sleep(1)
@@ -234,7 +233,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
                 pdf.multi_cell(0, 6, text_clean, align='J')
                 pdf.ln(4)
 
-    # (El resto del código se mantiene igual)
     rel_path = os.path.relpath(os.path.dirname(md_path), input_folder)
     pdf_folder = os.path.join(output_folder, rel_path)
     os.makedirs(pdf_folder, exist_ok=True)
