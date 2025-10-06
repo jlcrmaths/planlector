@@ -1,5 +1,5 @@
 # .github/workflows/generar-pdfs-comic.yml
-name: Generar PDFs con imágenes (Runware)
+name: Generar PDFs (fallback AI Horde)
 
 on:
   push:
@@ -28,15 +28,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generar PDFs ilustrados
+      - name: Generar PDFs ilustrados (AI Horde)
         env:
           FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-          IMAGEROUTER_PROVIDER: runware
-          RUNWARE_API_URL: https://api.runware.ai/v1
-          RUNWARE_API_KEY: ${{ secrets.RUNWARE_API_KEY }}
-          IMAGEROUTER_MODEL: runware:101@1
-          RUNWARE_MODEL: runware:101@1
-          MAX_IMAGES: '6'
+
+          # Proveedor gratuito
+          IMAGEROUTER_PROVIDER: aihorde
+          IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
+          # IMAGEROUTER_API_KEY: ""  # opcional; por defecto usa "0000000000"
+          MAX_IMAGES: '4'
         run: |
           mkdir -p pdfs_generados
           python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
