@@ -25,30 +25,39 @@ def _ensure_png(img_bytes: bytes) -> bytes:
 def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, height: int, steps: int, timeout: int) -> bytes:
     headers = {"apikey": _clean(api_key) or "0000000000", "Client-Agent": "ImageIllustrator:1.0"}
     
-    # --- PARÁMETROS DE ALTA CALIDAD ---
-    negative_prompt = "(worst quality, low quality, normal quality), lowres, bad anatomy, bad hands, multiple views, multiple panels, watermark, signature, text, letters, username, artist name, blurry, ugly"
-    full_prompt = f"{prompt} ### {negative_prompt}"
+    # --- INICIO DE LA REPARACIÓN DEL ERROR 400 ---
+    # La API de AI Horde prefiere los prompts negativos en un campo separado.
+    # Esta es la forma correcta de enviar una petición de alta calidad.
+    negative_prompt = "(worst quality, low quality, normal quality), lowres, bad anatomy, bad hands, multiple views, multiple panels, watermark, signature, text, letters, username, artist name, blurry, ugly, deformed, mutated"
     
     payload = {
-        "prompt": full_prompt,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt, # <--- Usamos el campo correcto
         "params": {
             "sampler_name": "k_dpmpp_2m_sde",
-            "width": width, "height": height,
-            "steps": 30,  # Pasos de alta calidad
-            "cfg_scale": 7.5
+            "width": width, 
+            "height": height,
+            "steps": 30,
+            "cfg_scale": 7.0
         },
-        # --- CORRECCIÓN: Eliminamos el 'models' que causaba el Error 400 ---
-        "n": 1, "r2": True, "nsfw": True, "censor_nsfw": False
+        "nsfw": True, 
+        "censor_nsfw": False,
+        "r2": True,
+        "n": 1
     }
-    # --- FIN DE LA CORRECIÓN ---
+    # --- FIN DE LA REPARACIÓN ---
 
     r = requests.post(f"{base_url.rstrip('/')}/generate/async", headers=headers, json=payload, timeout=timeout)
-    r.raise_for_status()
+    # Si la petición sigue estando mal, veremos el detalle del error
+    if r.status_code != 202:
+        raise ImageRouterError(f"AI Horde devolvió un error: {r.status_code} - {r.text}")
+        
     req_id = r.json().get("id")
-    if not req_id: raise ImageRouterError("AI Horde sin id de petición.")
+    if not req_id: raise ImageRouterError("AI Horde no devolvió un ID de petición.")
+    
     t0 = time.time()
     while True:
-        time.sleep(4)
+        time.sleep(5) # Damos más tiempo para la generación de alta calidad
         rc = requests.get(f"{base_url.rstrip('/')}/generate/check/{req_id}", timeout=timeout)
         rc.raise_for_status()
         status = rc.json()
@@ -59,7 +68,8 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
     rs.raise_for_status()
     st = rs.json()
     gens = st.get("generations") or []
-    if not gens: raise ImageRouterError("AI Horde: sin generaciones.")
+    if not gens: raise ImageRouterError("AI Horde no devolvió generaciones.")
+    
     img_field = gens[0].get("img") or ""
     if img_field.lower().startswith("http"):
         rimg = requests.get(img_field, timeout=timeout); rimg.raise_for_status()
