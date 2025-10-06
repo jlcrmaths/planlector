@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/-bin/env python3
 # -*- coding: utf-8 -*-
 import os, time, base64, json, pathlib
 from typing import Optional
@@ -25,16 +25,15 @@ def _ensure_png(img_bytes: bytes) -> bytes:
 def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, height: int, steps: int, timeout: int) -> bytes:
     headers = {"apikey": _clean(api_key) or "0000000000", "Client-Agent": "ImageIllustrator:1.0"}
     
-    # --- INICIO DE LA REPARACIÓN DEL ERROR 400 ---
-    # La API de AI Horde prefiere los prompts negativos en un campo separado.
-    # Esta es la forma correcta de enviar una petición de alta calidad.
     negative_prompt = "(worst quality, low quality, normal quality), lowres, bad anatomy, bad hands, multiple views, multiple panels, watermark, signature, text, letters, username, artist name, blurry, ugly, deformed, mutated"
     
     payload = {
         "prompt": prompt,
-        "negative_prompt": negative_prompt, # <--- Usamos el campo correcto
+        "negative_prompt": negative_prompt,
         "params": {
-            "sampler_name": "k_dpmpp_2m_sde",
+            # --- INICIO DE LA CORRECCIÓN FINAL ---
+            "sampler_name": "k_dpmpp_2m", # Usamos un sampler de la lista que nos dio el error
+            # --- FIN DE LA CORRECCIÓN FINAL ---
             "width": width, 
             "height": height,
             "steps": 30,
@@ -45,10 +44,8 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
         "r2": True,
         "n": 1
     }
-    # --- FIN DE LA REPARACIÓN ---
 
     r = requests.post(f"{base_url.rstrip('/')}/generate/async", headers=headers, json=payload, timeout=timeout)
-    # Si la petición sigue estando mal, veremos el detalle del error
     if r.status_code != 202:
         raise ImageRouterError(f"AI Horde devolvió un error: {r.status_code} - {r.text}")
         
@@ -57,7 +54,7 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
     
     t0 = time.time()
     while True:
-        time.sleep(5) # Damos más tiempo para la generación de alta calidad
+        time.sleep(5)
         rc = requests.get(f"{base_url.rstrip('/')}/generate/check/{req_id}", timeout=timeout)
         rc.raise_for_status()
         status = rc.json()
