@@ -1,4 +1,3 @@
-# scripts/generar_pdfs_comic.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -7,6 +6,7 @@ import re
 import sys
 import argparse
 import tempfile
+import time  # <--- 1. LÍNEA AÑADIDA
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 from pathlib import Path
@@ -166,17 +166,17 @@ def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
     for _, text, hlevel in para_texts:
         score = 0.0
         L = len(text)
-        score += min(L / 400.0, 1.5)         # longitud
+        score += min(L / 400.0, 1.5)      # longitud
         if hlevel in (2, 3):
-            score += 0.6                      # relevancia si sigue a H2/H3
+            score += 0.6                  # relevancia si sigue a H2/H3
         if any(kw in text.lower() for kw in KEYWORDS):
-            score += 0.7                      # palabras clave
+            score += 0.7                  # palabras clave
         if len(text.strip()) < 80:
-            score -= 0.6                      # párrafos muy cortos
+            score -= 0.6                  # párrafos muy cortos
         if re.match(r'^\s*([-*+]|\d+\.)\s+', text):
-            score -= 0.8                      # listas
+            score -= 0.8                  # listas
         if "```" in text or re.search(r'`{1,3}', text):
-            score -= 1.0                      # bloques de código
+            score -= 1.0                  # bloques de código
         scored.append(score)
 
     ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
@@ -423,6 +423,7 @@ def generar_pdf_de_md(md_path: str,
                     img = obtener_imagen(prompt, cache_dir, model=model)
                     pdf.flow_paragraph_with_image(text_clean, img, side=side, img_w_mm=70.0)
                     side = "left" if side == "right" else "right"
+                    time.sleep(1) # <--- 2. LÍNEA AÑADIDA (PAUSA)
                 except ImageRouterBillingRequired as e:
                     msg = f"⛔ ImageRouter requiere depósito/activación: {e}"
                     if fail_on_router_error:
