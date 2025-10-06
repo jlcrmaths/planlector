@@ -2,18 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Cliente multiproveedor para generación de imágenes.
-
-Proveedores soportados (vía IMAGEROUTER_PROVIDER):
-- 'runware'     -> API de Runware (https://api.runware.ai/v1)
-- 'huggingface' -> Inference API (bytes)
-- 'openai'      -> Routers OpenAI-style (/v1/images/generations)
-- 'aihorde'     -> (opcional) AI Horde público
-
-ENV principales:
-  IMAGEROUTER_PROVIDER = runware | huggingface | openai | aihorde
-  RUNWARE_API_URL      = https://api.runware.ai/v1
-  RUNWARE_API_KEY      = <tu_key>
-  RUNWARE_MODEL        = runware:101@1    (por defecto; cambia si quieres SDXL/FLUX/etc.)
+...
 """
 
 import os
@@ -72,13 +61,6 @@ def _post_runware_http(
     steps: int,
     timeout: int
 ) -> bytes:
-    """
-    Runware REST:
-      - Endpoint: POST https://api.runware.ai/v1
-      - Auth: Authorization: Bearer <API_KEY>  (o bloque 'authentication' en payload)
-      - Payload: [ { taskType:'imageInference', ... } ]
-      - Respuesta: data[0].imageURL (descargamos) o imageBase64Data (según outputType)
-    """
     headers = {
         "Authorization": f"Bearer {_clean(api_key)}",
         "Content-Type": "application/json"
@@ -87,7 +69,7 @@ def _post_runware_http(
     task = {
         "taskType": "imageInference",
         "taskUUID": str(uuid4()),
-        "outputType": "URL",        # Descargaremos via imageURL
+        "outputType": "URL",
         "outputFormat": "JPG",
         "positivePrompt": prompt,
         "height": int(max(64, min(height, 1536))),
@@ -111,13 +93,11 @@ def _post_runware_http(
         raise ImageRouterError(f"Runware: respuesta sin 'data': {data}")
 
     first = arr[0]
-    # Preferimos URL
     if "imageURL" in first and first["imageURL"]:
         rimg = requests.get(first["imageURL"], timeout=timeout)
         rimg.raise_for_status()
         return _ensure_png(rimg.content)
 
-    # Soporte base64 (por si cambiases outputType)
     if "imageBase64Data" in first and first["imageBase64Data"]:
         return _ensure_png(base64.b64decode(first["imageBase64Data"]))
 
@@ -170,13 +150,13 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
     payload = {
         "prompt": prompt,
         "params": {
-            "width": max(64, min(width, 1536)),
-            "height": max(64, min(height, 1536)),
+            "width": width,   # Usamos el valor que nos llega
+            "height": height, # Usamos el valor que nos llega
             "steps": max(1, min(steps, 20)),
             "cfg_scale": 5.0
         },
         "n": 1, "r2": True,
-        "nsfw": True, "censor_nsfw": False  # <--- ESTA ES LA LÍNEA MODIFICADA
+        "nsfw": True, "censor_nsfw": False
     }
     r = requests.post(f"{base_url.rstrip('/')}/generate/async", headers=headers, json=payload, timeout=timeout)
     if r.status_code >= 400:
@@ -229,6 +209,13 @@ def generate_image_via_imagerouter(
     except Exception:
         w, h = 1024, 768
 
+    # --- INICIO DE LA MODIFICACIÓN ---
+    # Si el proveedor es AI Horde, forzamos un tamaño más pequeño para evitar el error de kudos
+    if provider == "aihorde":
+        w = 768
+        h = 512
+    # --- FIN DE LA MODIFICACIÓN ---
+
     if provider == "runware":
         api_url = _clean(os.getenv("RUNWARE_API_URL")) or "https://api.runware.ai/v1"
         api_key = _clean(os.getenv("RUNWARE_API_KEY"))
@@ -250,7 +237,7 @@ def generate_image_via_imagerouter(
         base_url = (_clean(os.getenv("IMAGEROUTER_BASE_URL")) or "").rstrip("/")
         api_key = _clean(os.getenv("IMAGEROUTER_API_KEY"))
         endpoint = base_url if base_url.endswith("/images/generations") else f"{base_url}/v1/images/generations"
-        payload = {"model": model or "gpt-image-1", "prompt": prompt, "size": size, "n": 1, "guidance_scale": guidance, "steps": steps}
+        payload = {"model": model or "gpt-image-1", "prompt": prompt, "size": f"{w}x{h}", "n": 1, "guidance_scale": guidance, "steps": steps}
         if seed is not None: payload["seed"] = seed
         img_bytes = _post_openai_images(endpoint, api_key, payload, timeout)
         with open(out_path, "wb") as f: f.write(img_bytes)
