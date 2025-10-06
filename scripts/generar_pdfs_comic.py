@@ -6,7 +6,7 @@ import re
 import sys
 import argparse
 import tempfile
-import time  # <--- 1. LÍNEA AÑADIDA
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 from pathlib import Path
@@ -34,7 +34,6 @@ try:
         ImageRouterBillingRequired,
     )
 except ModuleNotFoundError:
-    # alternativa si la ruta es scripts/imagerouter_client.py
     from scripts.imagerouter_client import (
         generate_image_via_imagerouter,
         ImageRouterError,
@@ -45,9 +44,8 @@ except ModuleNotFoundError:
 # Prompt automático: import si existe, fallback si no
 # --------------------------------------------------------------------------------------
 try:
-    from scripts.prompt_synthesizer import build_visual_prompt  # type: ignore
+    from scripts.prompt_synthesizer import build_visual_prompt
 except Exception:
-    # Fallback mínimo si no existe scripts/prompt_synthesizer.py
     ABSTRACT = {
         "idea","concepto","teoría","historia","cultura","sistema","proceso","método",
         "información","cantidad","tiempo","serie","conjunto","uso","necesidad",
@@ -68,14 +66,19 @@ except Exception:
         nouns = [w for w in lower if w not in verbs]
         visual = [w for w in nouns if w not in ABSTRACT][:4]
         places = [w for w in nouns if w in {"egipto","roma","india","babilonia"}][:1]
-        if not verbs: verbs = ["representar"]
+        if not verbs: verbs = ["representando"]
         if not visual: visual = ["elementos clave del tema"]
         style = "ilustración educativa contemporánea" if places or len(visual) < 3 else "infografía didáctica minimalista"
         place_str = f" Ambientación: {', '.join(places)}." if places else ""
+        main_scene = ""
+        if visual:
+            main_scene = ", ".join(visual[:2]) + " " + ", ".join(verbs)
+        else:
+            main_scene = ", ".join(verbs)
         prompt = (
             f"{style}, clara y legible, sin texto ni marcas. "
             f"Enfoque educativo (12–16 años). "
-            f"Escena principal: {', '.join(visual[:2])} {', '.join(verbs)}. "
+            f"Escena principal: {main_scene}. "
             f"Elementos visuales clave: {', '.join(visual)}.{place_str} "
             f"Composición limpia, colores equilibrados, fondo neutro, alta nitidez. "
             f"Evitar: {NEGATIVE}."
@@ -89,7 +92,7 @@ HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 
 @dataclass
 class Block:
-    type: str  # 'h1'..'h6' o 'p'
+    type: str
     text: str
 
 def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
@@ -146,11 +149,25 @@ def clean_inline_md(s: str) -> str:
     return s
 
 # --------------------------------------------------------------------------------------
-# Selección de párrafos a ilustrar
+# Selección de párrafos a ilustrar (CON LÓGICA DE RETOS)
 # --------------------------------------------------------------------------------------
 KEYWORDS = ["definición", "concepto", "importante", "clave", "conclusión", "ejemplo", "problema"]
 
-def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
+def select_key_paragraphs(blocks: List[Block], text_content: str, max_images: int = 4) -> Set[int]:
+    # --- INICIO DE LA MODIFICACIÓN: MODO RETO ---
+    # Si el documento es de retos, la lógica es diferente
+    if "reto" in text_content.lower():
+        challenge_indices = set()
+        for i, block in enumerate(blocks):
+            # Buscar encabezados como "### Reto 1: ..."
+            if block.type.startswith("h") and "reto" in block.text.lower():
+                # Ilustrar el siguiente párrafo si existe
+                if i + 1 < len(blocks) and blocks[i + 1].type == "p":
+                    challenge_indices.add(i + 1)
+        return challenge_indices
+    # --- FIN DE LA MODIFICACIÓN: MODO RETO ---
+
+    # Lógica original para documentos normales
     paragraph_indices = []
     para_texts = []
     last_heading_level: Optional[int] = None
@@ -166,17 +183,12 @@ def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
     for _, text, hlevel in para_texts:
         score = 0.0
         L = len(text)
-        score += min(L / 400.0, 1.5)      # longitud
-        if hlevel in (2, 3):
-            score += 0.6                  # relevancia si sigue a H2/H3
-        if any(kw in text.lower() for kw in KEYWORDS):
-            score += 0.7                  # palabras clave
-        if len(text.strip()) < 80:
-            score -= 0.6                  # párrafos muy cortos
-        if re.match(r'^\s*([-*+]|\d+\.)\s+', text):
-            score -= 0.8                  # listas
-        if "```" in text or re.search(r'`{1,3}', text):
-            score -= 1.0                  # bloques de código
+        score += min(L / 400.0, 1.5)
+        if hlevel in (2, 3): score += 0.6
+        if any(kw in text.lower() for kw in KEYWORDS): score += 0.7
+        if len(text.strip()) < 80: score -= 0.6
+        if re.match(r'^\s*([-*+]|\d+\.)\s+', text): score -= 0.8
+        if "```" in text or re.search(r'`{1,3}', text): score -= 1.0
         scored.append(score)
 
     ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
@@ -203,14 +215,10 @@ class ComicPDF(FPDF):
             ital = os.path.join(base_dir, "DejaVuSans-Oblique.ttf")
             boldital = os.path.join(base_dir, "DejaVuSans-BoldOblique.ttf")
             if os.path.isfile(reg):
-                self.add_font("DejaVu", style="", fname=reg)
-                self._font_family = "DejaVu"
-            if os.path.isfile(bold):
-                self.add_font("DejaVu", style="B", fname=bold)
-            if os.path.isfile(ital):
-                self.add_font("DejaVu", style="I", fname=ital)
-            if os.path.isfile(boldital):
-                self.add_font("DejaVu", style="BI", fname=boldital)
+                self.add_font("DejaVu", style="", fname=reg); self._font_family = "DejaVu"
+            if os.path.isfile(bold): self.add_font("DejaVu", style="B", fname=bold)
+            if os.path.isfile(ital): self.add_font("DejaVu", style="I", fname=ital)
+            if os.path.isfile(boldital): self.add_font("DejaVu", style="BI", fname=boldital)
         except Exception as e:
             print(f"[AVISO] No se pudieron cargar fuentes DejaVu: {e}")
 
@@ -248,15 +256,12 @@ class ComicPDF(FPDF):
             text_w = usable_w
             img_w_mm = 0.0
 
-        # Altura estimada del texto (dry_run)
         lines = self.multi_cell(text_w if img_w_mm > 0 else usable_w, line_h, text, align='J', dry_run=True, output="LINES")
-        if isinstance(lines, dict) and "lines" in lines:
-            lines = lines["lines"]
+        if isinstance(lines, dict) and "lines" in lines: lines = lines["lines"]
         text_h = len(lines) * line_h
 
         y_start = self.get_y()
         bottom = self.h - self.b_margin
-
         img_path, img_h = (None, 0.0)
         if img_w_mm > 0:
             img_path, img_h = self._pil_to_temp_jpg(img, img_w_mm)
@@ -267,17 +272,11 @@ class ComicPDF(FPDF):
             y_start = self.get_y()
 
         if img_w_mm > 0 and img_path:
-            if side == "right":
-                x_img = self.w - r - img_w_mm
-                x_text = l
-            else:
-                x_img = l
-                x_text = l + img_w_mm + gutter_mm
+            x_img = self.w - r - img_w_mm if side == "right" else l
+            x_text = l if side == "right" else l + img_w_mm + gutter_mm
             self.image(img_path, x=x_img, y=y_start, w=img_w_mm)
-            try:
-                os.remove(img_path)
-            except Exception:
-                pass
+            try: os.remove(img_path)
+            except Exception: pass
         else:
             x_text = l
         self.set_xy(x_text, y_start)
@@ -291,44 +290,29 @@ class ComicPDF(FPDF):
 # --------------------------------------------------------------------------------------
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
     import hashlib
-
     h = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
     out_dir = os.path.join(cache_dir, "imagerouter")
     os.makedirs(out_dir, exist_ok=True)
     cached_png = os.path.join(out_dir, f"{h}.png")
 
-    # Caché
     if os.path.isfile(cached_png):
-        try:
-            return Image.open(cached_png).convert("RGB")
+        try: return Image.open(cached_png).convert("RGB")
         except Exception:
-            try:
-                os.remove(cached_png)
-            except Exception:
-                pass
+            try: os.remove(cached_png)
+            except Exception: pass
 
     seed = int(h, 16) % 2_147_483_647
-
     try:
-        png_real = generate_image_via_imagerouter(
-            prompt=prompt,
-            out_dir=out_dir,
-            model=model,
-            size="1024x768",
-            guidance=4.0,
-            steps=12,
-            seed=seed,
-            timeout=600
-        )
+        png_real = generate_image_via_imagerouter(prompt=prompt, out_dir=out_dir, model=model,
+                                                 size="1024x768", guidance=4.0, steps=12,
+                                                 seed=seed, timeout=600)
         if png_real != cached_png:
-            try:
-                os.replace(png_real, cached_png)
+            try: os.replace(png_real, cached_png)
             except Exception:
                 if not os.path.isfile(cached_png):
                     import shutil
                     shutil.copyfile(png_real, cached_png)
         return Image.open(cached_png).convert("RGB")
-
     except ImageRouterBillingRequired as e:
         raise
     except Exception as e:
@@ -342,29 +326,28 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
 # --------------------------------------------------------------------------------------
 # Generación del PDF por cada .md
 # --------------------------------------------------------------------------------------
-def generar_pdf_de_md(md_path: str,
-                      input_folder: str,
-                      output_folder: str,
-                      font_path: Optional[str],
-                      model: str,
-                      max_images: int,
-                      no_images: bool = False,
-                      fail_on_router_error: bool = False):
+def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str,
+                      font_path: Optional[str], model: str, max_images: int,
+                      no_images: bool = False, fail_on_router_error: bool = False):
     with open(md_path, "r", encoding="utf-8") as f:
-        text = f.read()
+        text_content = f.read()
 
-    blocks, actividades, title_h1 = parse_markdown(text)
+    blocks, actividades, title_h1 = parse_markdown(text_content)
     filename_title = os.path.splitext(os.path.basename(md_path))[0]
     title = title_h1 or filename_title
     cache_dir = os.path.join(output_folder, "_cache_imgs")
+
+    # --- INICIO DE LA MODIFICACIÓN: DETECTAR MODO RETO ---
+    is_challenge_document = "reto" in text_content.lower()
+    # --- FIN DE LA MODIFICACIÓN ---
 
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
     pdf.set_author("Proyecto educativo")
     pdf.add_page()
 
-    # Portada con imagen
-    if not no_images:
+    # --- INICIO DE LA MODIFICACIÓN: SALTAR PORTADA EN MODO RETO ---
+    if not no_images and not is_challenge_document:
         try:
             portada_prompt = build_visual_prompt("Portada del documento", title)
             portada_img = obtener_imagen(portada_prompt, cache_dir, model=model)
@@ -372,83 +355,62 @@ def generar_pdf_de_md(md_path: str,
             y0 = pdf.get_y()
             path_tmp, h_mm = pdf._pil_to_temp_jpg(portada_img, w_mm=img_w)
             pdf.image(path_tmp, x=pdf.l_margin, y=y0, w=img_w)
-            try:
-                os.remove(path_tmp)
-            except Exception:
-                pass
+            try: os.remove(path_tmp)
+            except Exception: pass
             pdf.set_y(y0 + h_mm + 5)
         except ImageRouterBillingRequired as e:
             msg = f"⛔ ImageRouter requiere depósito/activación: {e}"
-            if fail_on_router_error:
-                raise SystemExit(msg)
-            else:
-                print(msg)
+            if fail_on_router_error: raise SystemExit(msg)
+            else: print(msg)
+    # --- FIN DE LA MODIFICACIÓN ---
 
-    # Título
     pdf.header_title(title)
     pdf.use_font(size=12)
 
-    # Índices de párrafos a ilustrar
-    top_idxs = select_key_paragraphs(blocks, max_images=max_images)
+    # Índices de párrafos a ilustrar (usa la nueva lógica dual)
+    top_idxs = select_key_paragraphs(blocks, text_content, max_images=max_images)
 
     side = "right"
     billing_blocked = False
-
     for idx, b in enumerate(blocks):
         if b.type.startswith("h"):
             level = int(b.type[1])
-            if level == 2 and b.text.strip().lower() == "actividades":
-                # Sección de actividades al final
-                continue
+            if level == 2 and b.text.strip().lower() == "actividades": continue
             if level == 2:
-                pdf.use_font(style="B", size=16)
-                pdf.set_text_color(200, 30, 30)
-                pdf.multi_cell(0, 8, clean_inline_md(b.text), align='J')
-                pdf.ln(2)
-                pdf.set_text_color(0, 0, 0)
-                pdf.use_font(size=12)
+                pdf.use_font(style="B", size=16); pdf.set_text_color(200, 30, 30)
+                pdf.multi_cell(0, 8, clean_inline_md(b.text), align='J'); pdf.ln(2)
+                pdf.set_text_color(0, 0, 0); pdf.use_font(size=12)
             elif level == 3:
                 pdf.use_font(style="B", size=14)
-                pdf.multi_cell(0, 7, clean_inline_md(b.text), align='J')
-                pdf.ln(1)
+                pdf.multi_cell(0, 7, clean_inline_md(b.text), align='J'); pdf.ln(1)
                 pdf.use_font(size=12)
             continue
 
         if b.type == "p":
             text_clean = clean_inline_md(b.text)
-
             if idx in top_idxs and not no_images and not billing_blocked:
                 try:
                     prompt = build_visual_prompt(text_clean, title)
                     img = obtener_imagen(prompt, cache_dir, model=model)
                     pdf.flow_paragraph_with_image(text_clean, img, side=side, img_w_mm=70.0)
                     side = "left" if side == "right" else "right"
-                    time.sleep(1) # <--- 2. LÍNEA AÑADIDA (PAUSA)
+                    time.sleep(1)
                 except ImageRouterBillingRequired as e:
                     msg = f"⛔ ImageRouter requiere depósito/activación: {e}"
-                    if fail_on_router_error:
-                        raise SystemExit(msg)
+                    if fail_on_router_error: raise SystemExit(msg)
                     else:
-                        print(msg)
-                        billing_blocked = True
-                        pdf.multi_cell(0, 6, text_clean, align='J')
-                        pdf.ln(2)
+                        print(msg); billing_blocked = True
+                        pdf.multi_cell(0, 6, text_clean, align='J'); pdf.ln(2)
             else:
-                pdf.multi_cell(0, 6, text_clean, align='J')
-                pdf.ln(2)
+                pdf.multi_cell(0, 6, text_clean, align='J'); pdf.ln(2)
 
-    # Sección de actividades
     if actividades:
         pdf.add_page()
-        pdf.use_font(style="B", size=18)
-        pdf.set_text_color(30, 100, 30)
-        pdf.multi_cell(0, 10, "Actividades", align='C')
-        pdf.ln(5)
-        pdf.set_text_color(0, 0, 0)
-        pdf.use_font(size=12)
+        pdf.use_font(style="B", size=18); pdf.set_text_color(30, 100, 30)
+        pdf.multi_cell(0, 10, "Actividades", align='C'); pdf.ln(5)
+        pdf.set_text_color(0, 0, 0); pdf.use_font(size=12)
         for act in actividades:
-            pdf.multi_cell(0, 6, f"• {clean_inline_md(act)}", align='J')
-            pdf.ln(2)
+            pdf.multi_cell(0, 6, f"• {clean_inline_md(act)}", align='J'); pdf.ln(2)
 
     rel_path = os.path.relpath(os.path.dirname(md_path), input_folder)
     pdf_folder = os.path.join(output_folder, rel_path)
@@ -489,16 +451,9 @@ def main():
         return
 
     for md in md_list:
-        generar_pdf_de_md(
-            md,
-            args.input_folder,
-            args.output_folder,
-            font_path=font_path,
-            model=args.model,
-            max_images=args.max_images,
-            no_images=args.no_images,
-            fail_on_router_error=args.fail_on_router_error,
-        )
+        generar_pdf_de_md(md, args.input_folder, args.output_folder, font_path=font_path,
+                          model=args.model, max_images=args.max_images, no_images=args.no_images,
+                          fail_on_router_error=args.fail_on_router_error)
 
 if __name__ == "__main__":
     main()
