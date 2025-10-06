@@ -50,9 +50,7 @@ def _ensure_png(img_bytes: bytes) -> bytes:
 
 
 # (Las funciones para Runware, Hugging Face, y OpenAI se mantienen igual)
-# ...
 def _post_runware_http(api_url: str, api_key: str, prompt: str, model: str, width: int, height: int, steps: int, timeout: int) -> bytes:
-    # ... código sin cambios ...
     headers = {"Authorization": f"Bearer {_clean(api_key)}","Content-Type": "application/json"}
     mdl = model or os.getenv("RUNWARE_MODEL", "runware:101@1")
     task = {"taskType": "imageInference","taskUUID": str(uuid4()),"outputType": "URL","outputFormat": "JPG","positivePrompt": prompt,"height": int(max(64, min(height, 1536))),"width": int(max(64, min(width, 1536))),"model": mdl,"steps": max(1, min(steps, 20)),"CFGScale": 7.5,"numberResults": 1}
@@ -72,7 +70,6 @@ def _post_runware_http(api_url: str, api_key: str, prompt: str, model: str, widt
     raise ImageRouterError("Runware: no se encontró imageURL ni base64 en la respuesta.")
 
 def _post_hf_bytes(endpoint: str, api_key: str, prompt: str, timeout: int) -> bytes:
-    # ... código sin cambios ...
     headers = {"Authorization": f"Bearer {_clean(api_key)}", "Content-Type": "application/json"}
     payload = {"inputs": prompt}
     resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
@@ -83,7 +80,6 @@ def _post_hf_bytes(endpoint: str, api_key: str, prompt: str, timeout: int) -> by
     return _ensure_png(resp.content)
 
 def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int) -> bytes:
-    # ... código sin cambios ...
     headers = {"Content-Type": "application/json"}
     if _clean(api_key): headers["Authorization"] = f"Bearer {_clean(api_key)}"
     resp = requests.post(endpoint, headers=headers, json=payload, timeout=timeout)
@@ -101,6 +97,7 @@ def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int
             r.raise_for_status()
             return _ensure_png(r.content)
     raise ImageRouterError("OpenAI-style: respuesta sin imagen.")
+
 
 # ---------- (Opcional) AI Horde ----------
 def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, height: int, steps: int, timeout: int) -> bytes:
@@ -152,7 +149,7 @@ def generate_image_via_imagerouter(
     seed: Optional[int] = None,
     timeout: int = 300
 ) -> str:
-    provider = os.getenv("IMagerouter_PROVIDER", "runware").strip().lower()
+    provider = os.getenv("IMAGEROUTER_PROVIDER", "runware").strip().lower()
     pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
     out_path = str(pathlib.Path(out_dir, f"img_{_rand_name()}.png"))
 
@@ -162,7 +159,7 @@ def generate_image_via_imagerouter(
         w, h = 1024, 768
 
     # --- INICIO DE LA MODIFICACIÓN ---
-    # Si el proveedor es AI Horde, forzamos un tamaño pequeño para evitar el error de kudos
+    # Si el proveedor es AI Horde, forzamos un tamaño seguro para evitar el error de kudos
     if provider == "aihorde":
         w = 512
         h = 512
@@ -177,7 +174,6 @@ def generate_image_via_imagerouter(
         return out_path
 
     if provider == "huggingface":
-        # ... código sin cambios ...
         base_url = _clean(os.getenv("IMAGEROUTER_BASE_URL"))
         if not base_url: raise ImageRouterError("Falta IMAGEROUTER_BASE_URL para Hugging Face.")
         api_key = _clean(os.getenv("IMAGEROUTER_API_KEY"))
@@ -186,7 +182,6 @@ def generate_image_via_imagerouter(
         return out_path
 
     if provider == "openai":
-        # ... código sin cambios ...
         base_url = (_clean(os.getenv("IMAGEROUTER_BASE_URL")) or "").rstrip("/")
         api_key = _clean(os.getenv("IMAGEROUTER_API_KEY"))
         endpoint = base_url if base_url.endswith("/images/generations") else f"{base_url}/v1/images/generations"
