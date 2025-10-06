@@ -21,26 +21,27 @@ for p in (HERE, PARENT):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-# --- ImageRouter client ---
 try:
-    from imagerouter_client import generate_image_via_imagerouter
+    from imagerouter_client import (generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired)
 except ModuleNotFoundError:
-    from scripts.imagerouter_client import generate_image_via_imagerouter
+    from scripts.imagerouter_client import (generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired)
 
-# --- Ultimate Prompt / fallback ---
 try:
     from scripts.prompt_synthesizer import build_visual_prompt
 except Exception:
     def build_visual_prompt(text: str, doc_title: str = "") -> str:
-        return f"educational illustration, child-friendly, bright colors, simple composition, {doc_title}, elements: {text[:100]} --neg text, letters, words, signature, watermark, UI, interface, screenshot, speech bubble, subtitle, logo"
+        # Fallback simple
+        return f"ilustración educativa sobre {doc_title}, elementos visuales: {text[:100]}"
 
-# --- Markdown parsing ---
+# --- INICIO DE LA MODIFICACIÓN: PARSER CON SOPORTE PARA ![prompt] ---
+
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
-PROMPT_RE = re.compile(r'^\s*(?P<prompt>.+?),(?:\s*(realista|fotografía|acción|día soleado|interior|exterior).*)?$')
+# Expresión regular para capturar la nueva sintaxis de prompt manual
+PROMPT_RE = re.compile(r'^\s*!\[prompt\]\s*(.*)\s*$', re.IGNORECASE)
 
 @dataclass
 class Block:
-    type: str
+    type: str  # 'h1'-'h6', 'p', o 'img'
     text: str
 
 def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
@@ -54,18 +55,22 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
     def flush_para():
         nonlocal current_para
         if current_para:
-            blocks.append(Block('p', "\n".join(current_para).strip()))
+            content = "\n".join(current_para).strip()
+            if content:
+                blocks.append(Block('p', content))
             current_para = []
 
     for line in lines:
+        # 1. Buscar prompts manuales
         m_prompt = PROMPT_RE.match(line)
         if m_prompt:
             flush_para()
-            prompt_text = (m_prompt.group("prompt") or "").strip()
+            prompt_text = m_prompt.group(1).strip()
             if prompt_text:
                 blocks.append(Block('img', prompt_text))
             continue
 
+        # 2. Buscar encabezados
         m_heading = HEADING_RE.match(line)
         if m_heading:
             flush_para()
@@ -80,21 +85,28 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
             if line.strip(): actividades.append(line.strip())
             continue
 
+        # 3. Procesar párrafos y líneas en blanco
         if not line.strip():
-            flush_para()
+            # Si encontramos una línea en blanco, es el fin de un párrafo
+            if current_para:
+                flush_para()
         else:
             current_para.append(line)
 
-    flush_para()
+    flush_para() # Asegurarse de que el último párrafo se guarda
     return blocks, actividades, (title_h1 or "")
 
-# --- Utilities ---
+# --- FIN DE LA MODIFICACIÓN ---
+
 def clean_inline_md(s: str) -> str:
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
     s = re.sub(r'__(.+?)__', r'\1', s)
+    # Eliminar saltos de línea extraños dentro de un párrafo
+    s = re.sub(r'\s*\n\s*', ' ', s)
     return re.sub(r'\s{2,}', ' ', s).strip()
 
 def select_key_paragraphs(blocks: List[Block], max_images: int) -> Set[int]:
+    # Esta función ahora solo se usará si no hay prompts manuales
     paragraph_indices = [i for i, b in enumerate(blocks) if b.type == "p"]
     if not paragraph_indices: return set()
     para_texts = [(i, b.text) for i, b in enumerate(blocks) if b.type == "p"]
@@ -102,7 +114,6 @@ def select_key_paragraphs(blocks: List[Block], max_images: int) -> Set[int]:
     ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
     return set(paragraph_indices[idx] for idx, _ in ranked)
 
-# --- PDF Class ---
 class ComicPDF(FPDF):
     def __init__(self, font_path: Optional[str] = None):
         super().__init__(orientation="P", unit="mm", format="A4")
@@ -135,7 +146,6 @@ class ComicPDF(FPDF):
         self.cell(0, 10, f'Página {self.page_no()}', align='C')
 
     def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float):
-        if isinstance(img, str): img = Image.open(img)
         iw, ih = img.size
         h_mm = w_mm * (ih / iw) if iw else w_mm
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
@@ -143,30 +153,10 @@ class ComicPDF(FPDF):
             img.convert("RGB").save(path, "JPEG", quality=90)
         return path, h_mm
 
-    def flow_paragraph_with_image(self, text: str, img: Image.Image, side: str):
-        l, r = self.l_margin, self.r_margin; usable_w = self.w - l - r
-        img_w_mm = 70.0; gutter_mm = 6.0
-        lines = self.multi_cell(usable_w - img_w_mm - gutter_mm, 6, text, align='J', dry_run=True, output="LINES")
-        text_h = len(lines) * 6
-        y_start = self.get_y(); bottom = self.h - self.b_margin
-        path_tmp, img_h = self._pil_to_temp_jpg(img, img_w_mm)
-        if y_start + max(text_h, img_h) > bottom: self.add_page(); y_start = self.get_y()
-        x_img = self.w - r - img_w_mm if side == "right" else l
-        x_text = l if side == "right" else l + img_w_mm + gutter_mm
-        self.image(path_tmp, x=x_img, y=y_start, w=img_w_mm)
-        self.set_xy(x_text, y_start)
-        self.multi_cell(usable_w - img_w_mm - gutter_mm, 6, text, align='J')
-        self.set_y(y_start + max(text_h, img_h) + 4)
-        try: os.remove(path_tmp)
-        except Exception: pass
-
-# --- Imagenes ---
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
     try:
-        result = generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model)
-        if isinstance(result, str):
-            result = Image.open(result)
-        return result
+        # La llamada a imagerouter ahora pasa todos los parámetros necesarios
+        return generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model, timeout=600)
     except Exception as e:
         print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
         W, H = 512, 512
@@ -175,37 +165,52 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
         draw.rectangle([(24, 24), (W - 24, H - 24)], outline=(200, 200, 220), width=2)
         return img
 
-# --- Generación PDF ---
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_path: Optional[str], model: str, max_images: int, no_images: bool, fail_on_router_error: bool):
     with open(md_path, "r", encoding="utf-8") as f: text = f.read()
+    
+    # El nuevo parser se usa aquí
     blocks, actividades, title_h1 = parse_markdown(text)
+    
     title = title_h1 or os.path.splitext(os.path.basename(md_path))[0]
     cache_dir = os.path.join(output_folder, "_cache_imgs")
-    os.makedirs(cache_dir, exist_ok=True)
     pdf = ComicPDF(font_path=font_path)
     pdf.set_title(title)
     pdf.add_page()
 
-    manual_prompts_indices = {i for i, b in enumerate(blocks) if b.type == 'img'}
-    has_manual_prompts = bool(manual_prompts_indices)
+    # --- INICIO DE LA NUEVA LÓGICA DE ILUSTRACIÓN ---
+
+    # 1. Comprobar si el documento usa prompts manuales
+    has_manual_prompts = any(b.type == 'img' for b in blocks)
     
+    # 2. Imprimir la portada SOLO si estamos en modo automático
     if not no_images and not has_manual_prompts:
-        img = obtener_imagen(build_visual_prompt("Portada", title), cache_dir, model)
-        w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
-        path, h = pdf._pil_to_temp_jpg(img, w)
-        if y + h > pdf.h - pdf.b_margin: pdf.add_page(); y = pdf.get_y()
-        pdf.image(path, x=pdf.l_margin, y=y, w=w)
-        pdf.set_y(y + h + 5)
-        try: os.remove(path)
-        except Exception: pass
+        try:
+            portada_prompt = build_visual_prompt("Portada", title)
+            img = obtener_imagen(portada_prompt, cache_dir, model)
+            w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
+            path, h = pdf._pil_to_temp_jpg(img, w)
+            if y + h > pdf.h - pdf.b_margin: pdf.add_page(); y = pdf.get_y()
+            pdf.image(path, x=pdf.l_margin, y=y, w=w)
+            pdf.set_y(y + h + 5)
+            try: os.remove(path)
+            except Exception: pass
+        except Exception as e:
+            print(f"[AVISO] Falló la imagen de portada: {e}")
 
     pdf.header_title(title)
     
-    top_idxs = manual_prompts_indices if has_manual_prompts else select_key_paragraphs(blocks, max_images)
-    side = "right"
+    # 3. Decidir qué ilustrar
+    if has_manual_prompts:
+        # En modo manual, no se necesita la selección automática
+        pass
+    else:
+        # En modo automático, usamos la lógica de puntuación
+        auto_indices = select_key_paragraphs(blocks, max_images)
+
+    # 4. Recorrer los bloques y generar el PDF
     for idx, b in enumerate(blocks):
         if b.type == 'img' and not no_images:
-            print(f"🎨 Generando imagen manual: '{b.text[:80]}...'")
+            print(f"🎨 Generando imagen con prompt manual: '{b.text[:80]}...'")
             img = obtener_imagen(b.text, cache_dir, model)
             w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
             path, h = pdf._pil_to_temp_jpg(img, w)
@@ -214,25 +219,23 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
             pdf.set_y(y + h + 5)
             try: os.remove(path)
             except Exception: pass
-            time.sleep(1)
+            time.sleep(1) # Pausa para no saturar la API
+        
         elif b.type.startswith("h"):
             level = int(b.type[1])
             pdf.set_font(pdf._font_family, 'B', 22 - 2 * level)
             pdf.multi_cell(0, 10, clean_inline_md(b.text))
             pdf.set_font(pdf._font_family, '', 12)
             pdf.ln(2)
+        
         elif b.type == 'p':
             text_clean = clean_inline_md(b.text)
-            if idx in top_idxs and not no_images and not has_manual_prompts:
-                prompt = build_visual_prompt(text_clean, title)
-                img = obtener_imagen(prompt, cache_dir, model)
-                pdf.flow_paragraph_with_image(text_clean, img, side)
-                side = "left" if side == "right" else "right"
-                time.sleep(1)
-            else:
-                pdf.multi_cell(0, 6, text_clean, align='J')
-                pdf.ln(4)
+            pdf.multi_cell(0, 6, text_clean, align='J')
+            pdf.ln(4)
 
+    # --- FIN DE LA NUEVA LÓGICA DE ILUSTRACIÓN ---
+
+    # (El código para actividades y guardar el PDF se mantiene)
     rel_path = os.path.relpath(os.path.dirname(md_path), input_folder)
     pdf_folder = os.path.join(output_folder, rel_path)
     os.makedirs(pdf_folder, exist_ok=True)
@@ -240,7 +243,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
     pdf.output(output_pdf)
     print(f"✅ PDF generado: {output_pdf}")
 
-# --- Main ---
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-folder", default="historias")
@@ -261,4 +263,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
