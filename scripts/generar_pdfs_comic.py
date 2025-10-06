@@ -14,7 +14,7 @@ from pathlib import Path
 from fpdf import FPDF
 from PIL import Image, ImageDraw
 
-# ... (El código de importación y configuración inicial se mantiene igual) ...
+# (El código de importación y configuración inicial se mantiene igual)
 HERE = Path(__file__).resolve().parent
 PARENT = HERE.parent
 for p in (HERE, PARENT):
@@ -29,7 +29,6 @@ except ModuleNotFoundError:
 try:
     from scripts.prompt_synthesizer import build_visual_prompt
 except Exception:
-    # ... (El fallback del prompt_synthesizer se mantiene igual) ...
     ABSTRACT = {"idea","concepto","teoría","historia","cultura","sistema","proceso","método","información","cantidad","tiempo","serie","conjunto","uso","necesidad","tecnología","herramienta","algoritmo","posicional","invención","viaje","origen","números","matemáticas","clase","práctica","registro"}
     NEGATIVE = "watermark, logo, text overlay, subtítulos, texto, marcas de agua, caption, screenshot"
     def _clean_text_fallback(s: str) -> str: return re.sub(r'\s+', ' ', re.sub(r'__(.+?)__', r'\1', re.sub(r'\*\*(.+?)\*\*', r'\1', s))).strip()
@@ -45,15 +44,14 @@ except Exception:
         prompt = (f"ilustración educativa contemporánea, clara y legible. Escena principal: {', '.join(visual[:2])} {', '.join(verbs)}. Elementos: {', '.join(visual)}. Evitar: {NEGATIVE}.")
         return re.sub(r"\s{2,}", " ", prompt).strip()
 
-# --- INICIO DE LA MODIFICACIÓN ---
-# Actualizamos el parser para que reconozca los prompts manuales
+# --- INICIO DE LA CORRECCIÓN ---
 
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
-PROMPT_RE = re.compile(r'^\s*\s*$')
+PROMPT_RE = re.compile(r'') # Expresión regular simplificada
 
 @dataclass
 class Block:
-    type: str  # 'h1'..'h6', 'p', o 'img'
+    type: str
     text: str
 
 def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
@@ -71,16 +69,16 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
             current_para = []
 
     for line in lines:
-        # 1. Comprobar si es un prompt manual
-        m_prompt = PROMPT_RE.match(line)
+        # Usamos re.search que es más flexible
+        m_prompt = PROMPT_RE.search(line)
         if m_prompt:
             flush_para()
+            # El grupo 1 siempre existirá en un match, incluso si es una cadena vacía
             prompt_text = m_prompt.group(1).strip()
             if prompt_text:
                 blocks.append(Block('img', prompt_text))
             continue
 
-        # 2. Comprobar si es un encabezado
         m_heading = HEADING_RE.match(line)
         if m_heading:
             flush_para()
@@ -95,7 +93,7 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
             if line.strip(): actividades.append(line.strip())
             continue
 
-        if line.strip() == "":
+        if not line.strip():
             flush_para()
         else:
             current_para.append(line)
@@ -103,17 +101,15 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
     flush_para()
     return blocks, actividades, (title_h1 or "")
 
-# --- FIN DE LA MODIFICACIÓN ---
+# --- FIN DE LA CORRECCIÓN ---
+
 
 def clean_inline_md(s: str) -> str:
-    # ... (código sin cambios) ...
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s); s = re.sub(r'__(.+?)__', r'\1', s)
     return re.sub(r'\s{2,}', ' ', s).strip()
 
 def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
-    # ... (código sin cambios) ...
     paragraph_indices = [i for i, b in enumerate(blocks) if b.type == "p"]
-    # ... (el resto de la lógica de puntuación se mantiene) ...
     para_texts = []
     last_heading_level: Optional[int] = None
     for i, b in enumerate(blocks):
@@ -131,9 +127,7 @@ def select_key_paragraphs(blocks: List[Block], max_images: int = 4) -> Set[int]:
     ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
     return set(paragraph_indices[idx] for idx, _ in ranked)
 
-
 class ComicPDF(FPDF):
-    # ... (código de la clase PDF sin cambios) ...
     def __init__(self, font_path: Optional[str] = None):
         super().__init__(orientation="P", unit="mm", format="A4"); self.set_margins(18, 18, 18)
         self.set_auto_page_break(auto=True, margin=16); self._font_family = "helvetica"; self._init_fonts(font_path)
@@ -175,9 +169,7 @@ class ComicPDF(FPDF):
         self.set_xy(x_text, y_start); self.multi_cell(text_w if img_w_mm > 0 else usable_w, line_h, text, align='J')
         self.set_xy(l, max(y_start + img_h, self.get_y()) + 4.0)
 
-
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
-    # ... (código sin cambios) ...
     import hashlib
     h = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
     out_dir = os.path.join(cache_dir, "imagerouter"); os.makedirs(out_dir, exist_ok=True)
@@ -202,23 +194,15 @@ def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
         draw = ImageDraw.Draw(img); draw.rectangle([(24, 24), (W - 24, H - 24)], outline=(233, 238, 248), width=2)
         return img
 
-
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_path: Optional[str], model: str, max_images: int, no_images: bool = False, fail_on_router_error: bool = False):
     with open(md_path, "r", encoding="utf-8") as f: text = f.read()
-    
     blocks, actividades, title_h1 = parse_markdown(text)
     title = title_h1 or os.path.splitext(os.path.basename(md_path))[0]
     cache_dir = os.path.join(output_folder, "_cache_imgs")
-
     pdf = ComicPDF(font_path=font_path); pdf.set_title(title); pdf.add_page()
-    
-    # --- INICIO DE LA MODIFICACIÓN: Lógica para prompts manuales ---
-    
-    # Comprobamos si hay prompts manuales en el documento
     manual_prompts_indices = {i for i, b in enumerate(blocks) if b.type == 'img'}
     has_manual_prompts = bool(manual_prompts_indices)
-    
-    if not no_images and not has_manual_prompts: # Generar portada solo si no hay prompts manuales
+    if not no_images and not has_manual_prompts:
         try:
             portada_prompt = build_visual_prompt("Portada del documento", title)
             portada_img = obtener_imagen(portada_prompt, cache_dir, model=model)
@@ -229,30 +213,16 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
             except Exception: pass
             pdf.set_y(y0 + h_mm + 5)
         except Exception as e: print(f"[AVISO] Falló la imagen de portada: {e}")
-
     pdf.header_title(title)
-    
-    # Decidimos qué ilustrar: los prompts manuales o los párrafos automáticos
-    if has_manual_prompts:
-        top_idxs = manual_prompts_indices
-    else:
-        top_idxs = select_key_paragraphs(blocks, max_images)
-        
-    # --- FIN DE LA MODIFICACIÓN ---
-
+    top_idxs = manual_prompts_indices if has_manual_prompts else select_key_paragraphs(blocks, max_images)
     side = "right"
     for idx, b in enumerate(blocks):
         if b.type.startswith("h"):
-            # ... (código para imprimir encabezados sin cambios) ...
             level = int(b.type[1])
             if level == 2 and b.text.strip().lower() == "actividades": continue
             pdf.use_font(style="B", size=18 - 2 * (level - 2)); pdf.ln(1)
             pdf.multi_cell(0, 7, clean_inline_md(b.text)); pdf.ln(2); pdf.use_font(size=12)
             continue
-
-        # --- INICIO DE LA MODIFICACIÓN: Procesar nuevos tipos de bloques ---
-        
-        # Si es un bloque de imagen, la generamos y la insertamos
         if b.type == 'img' and idx in top_idxs and not no_images:
             try:
                 print(f"🎨 Generando imagen con prompt manual: '{b.text[:80]}...'")
@@ -266,8 +236,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
                 except Exception: pass
                 time.sleep(1)
             except Exception as e: print(f"[AVISO] Falló la generación de imagen manual: {e}")
-        
-        # Si es un párrafo, lo procesamos como antes (con o sin imagen automática)
         elif b.type == 'p':
             text_clean = clean_inline_md(b.text)
             if idx in top_idxs and not no_images and not has_manual_prompts:
@@ -282,24 +250,18 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
                     pdf.multi_cell(0, 6, text_clean, align='J'); pdf.ln(2)
             else:
                 pdf.multi_cell(0, 6, text_clean, align='J'); pdf.ln(2)
-        # --- FIN DE LA MODIFICACIÓN ---
-    
-    # ... (El resto del código para las actividades y guardar el PDF se mantiene igual) ...
     if actividades:
         pdf.add_page(); pdf.use_font(style="B", size=18); pdf.set_text_color(30, 100, 30)
         pdf.multi_cell(0, 10, "Actividades", align='C'); pdf.ln(5)
         pdf.set_text_color(0, 0, 0); pdf.use_font(size=12)
         for act in actividades: pdf.multi_cell(0, 6, f"• {clean_inline_md(act)}"); pdf.ln(2)
-    
     rel_path = os.path.relpath(os.path.dirname(md_path), input_folder)
     pdf_folder = os.path.join(output_folder, rel_path); os.makedirs(pdf_folder, exist_ok=True)
     output_pdf = os.path.join(pdf_folder, os.path.basename(md_path).replace(".md", ".pdf"))
     pdf.output(output_pdf)
     print(f"✅ PDF generado: {output_pdf}")
 
-
 def main():
-    # ... (código de main sin cambios) ...
     parser = argparse.ArgumentParser(description="Genera PDFs con imágenes");
     parser.add_argument("--input-folder", default="historias"); parser.add_argument("--output-folder", default="pdfs_generados")
     parser.add_argument("--model", default=os.getenv("IMAGEROUTER_MODEL", "runware:101@1")); parser.add_argument("--max-images", type=int, default=int(os.getenv("MAX_IMAGES", "6")))
