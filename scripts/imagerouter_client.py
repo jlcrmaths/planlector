@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# (código inicial sin cambios)
-# ...
 import os, time, base64, json, pathlib
 from typing import Optional
 from io import BytesIO
 import requests
 from PIL import Image
-from uuid import uuid4
 
 class ImageRouterError(Exception): pass
-class ImageRouterBillingRequired(ImageRouterError): pass
 
 def _rand_name(n=8) -> str:
     import secrets, string
@@ -21,39 +17,43 @@ def _clean(s: Optional[str]) -> str:
 
 def _ensure_png(img_bytes: bytes) -> bytes:
     try:
-        im = Image.open(BytesIO(img_bytes))
-        buf = BytesIO()
-        im.convert("RGB").save(buf, "PNG")
-        return buf.getvalue()
+        im = Image.open(BytesIO(img_bytes)); buf = BytesIO()
+        im.convert("RGB").save(buf, "PNG"); return buf.getvalue()
     except Exception: return img_bytes
 
-# ---------- (Opcional) AI Horde ----------
 def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, height: int, steps: int, timeout: int) -> bytes:
-    headers = {"apikey": _clean(api_key) or "0000000000", "Client-Agent": "ImageIllustrator:1.0:https://github.com/lmendezes/ImageIllustrator"}
+    headers = {"apikey": _clean(api_key) or "0000000000", "Client-Agent": "ImageIllustrator:1.0"}
+    
+    # --- PARÁMETROS DE ALTA CALIDAD ---
+    negative_prompt = "(worst quality, low quality, normal quality), lowres, bad anatomy, bad hands, multiple views, multiple panels, watermark, signature, text, letters, username, artist name, blurry, ugly"
+    full_prompt = f"{prompt} ### {negative_prompt}"
+    
     payload = {
-        "prompt": prompt,
+        "prompt": full_prompt,
         "params": {
-            "sampler_name": "k_dpmpp_2m",  # Un buen sampler estándar
-            "width": width,
-            "height": height,
-            "steps": 25,  # <-- Aumentamos los pasos de 12 a 25
-            "cfg_scale": 7.0
+            "sampler_name": "k_dpmpp_2m_sde",  # Sampler de alta calidad
+            "width": width, "height": height,
+            "steps": 30,  # Más pasos para mayor detalle
+            "cfg_scale": 7.5
         },
-        "models": ["AlbedoBase XL (SDXL)"],  # <-- Forzamos un modelo de alta calidad
-        "n": 1, "r2": True,
-        "nsfw": True, "censor_nsfw": False
+        "models": ["AlbedoBase XL (SDXL)"], # Modelo potente
+        "n": 1, "r2": True, "nsfw": True, "censor_nsfw": False
     }
+    # --- FIN DE PARÁMETROS ---
+
     r = requests.post(f"{base_url.rstrip('/')}/generate/async", headers=headers, json=payload, timeout=timeout)
     r.raise_for_status()
     req_id = r.json().get("id")
     if not req_id: raise ImageRouterError("AI Horde sin id de petición.")
     t0 = time.time()
     while True:
-        time.sleep(3) # Aumentamos la pausa para dar más tiempo a la generación
+        time.sleep(4) # Más tiempo de espera para la generación
         rc = requests.get(f"{base_url.rstrip('/')}/generate/check/{req_id}", timeout=timeout)
         rc.raise_for_status()
-        if rc.json().get("done"): break
+        status = rc.json()
+        if status.get("done"): break
         if time.time() - t0 > timeout: raise ImageRouterError("AI Horde: timeout.")
+    
     rs = requests.get(f"{base_url.rstrip('/')}/generate/status/{req_id}", timeout=timeout)
     rs.raise_for_status()
     st = rs.json()
@@ -67,7 +67,6 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
         b64 = img_field.split(",", 1)[1]; return _ensure_png(base64.b64decode(b64))
     return _ensure_png(base64.b64decode(img_field))
 
-# ---------- Router principal ----------
 def generate_image_via_imagerouter(
     prompt: str, out_dir: str, model: str = "", size: str = "1024x768",
     guidance: float = 4.0, steps: int = 12, seed: Optional[int] = None, timeout: int = 600
@@ -75,17 +74,12 @@ def generate_image_via_imagerouter(
     provider = os.getenv("IMAGEROUTER_PROVIDER", "aihorde").strip().lower()
     pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
     out_path = str(pathlib.Path(out_dir, f"img_{_rand_name()}.png"))
-
-    try: w, h = map(int, size.lower().split("x"))
-    except Exception: w, h = 1024, 768
-
+    
+    w, h = 512, 512 # Tamaño fijo y seguro
+    
     if provider == "aihorde":
-        w, h = 512, 512
-
-    if provider == "aihorde":
-        base = _clean(os.getenv("IMAGEROUTER_BASE_URL")) or "https://aihorde.net/api/v2"
         api_key = _clean(os.getenv("IMAGEROUTER_API_KEY")) or "0000000000"
-        img_bytes = _post_aihorde_http(base, prompt, api_key, w, h, steps, timeout)
+        img_bytes = _post_aihorde_http("https://aihorde.net/api/v2", prompt, api_key, w, h, steps, timeout)
         with open(out_path, "wb") as f: f.write(img_bytes)
         return out_path
 
