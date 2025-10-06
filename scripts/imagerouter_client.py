@@ -1,4 +1,4 @@
-#!/usr/-bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os, time, base64, json, pathlib
 from typing import Optional
@@ -25,18 +25,17 @@ def _ensure_png(img_bytes: bytes) -> bytes:
 def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, height: int, steps: int, timeout: int) -> bytes:
     headers = {"apikey": _clean(api_key) or "0000000000", "Client-Agent": "ImageIllustrator:1.0"}
     
+    # --- PARÁMETROS DE ALTA CALIDAD ---
     negative_prompt = "(worst quality, low quality, normal quality), lowres, bad anatomy, bad hands, multiple views, multiple panels, watermark, signature, text, letters, username, artist name, blurry, ugly, deformed, mutated"
     
     payload = {
         "prompt": prompt,
-        "negative_prompt": negative_prompt,
+        "negative_prompt": negative_prompt, # Campo específico para prompts negativos
         "params": {
-            # --- INICIO DE LA CORRECCIÓN FINAL ---
-            "sampler_name": "k_dpmpp_2m", # Usamos un sampler de la lista que nos dio el error
-            # --- FIN DE LA CORRECCIÓN FINAL ---
+            "sampler_name": "k_dpmpp_2m", # Un sampler de calidad y compatible
             "width": width, 
             "height": height,
-            "steps": 30,
+            "steps": 25, # Más pasos para un resultado refinado
             "cfg_scale": 7.0
         },
         "nsfw": True, 
@@ -44,6 +43,7 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
         "r2": True,
         "n": 1
     }
+    # --- FIN DE PARÁMETROS ---
 
     r = requests.post(f"{base_url.rstrip('/')}/generate/async", headers=headers, json=payload, timeout=timeout)
     if r.status_code != 202:
@@ -54,7 +54,7 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
     
     t0 = time.time()
     while True:
-        time.sleep(5)
+        time.sleep(5) # Pausa mayor para dar tiempo a la generación de calidad
         rc = requests.get(f"{base_url.rstrip('/')}/generate/check/{req_id}", timeout=timeout)
         rc.raise_for_status()
         status = rc.json()
@@ -83,7 +83,7 @@ def generate_image_via_imagerouter(
     pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
     out_path = str(pathlib.Path(out_dir, f"img_{_rand_name()}.png"))
     
-    w, h = 512, 512 # Tamaño fijo y seguro
+    w, h = 512, 512 # Tamaño fijo y seguro para evitar errores de "kudos"
     
     if provider == "aihorde":
         api_key = _clean(os.getenv("IMAGEROUTER_API_KEY")) or "0000000000"
