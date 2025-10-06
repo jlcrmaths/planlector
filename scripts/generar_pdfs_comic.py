@@ -12,7 +12,7 @@ from typing import List, Optional, Set, Tuple
 from pathlib import Path
 
 from fpdf import FPDF
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # --- Configuración de rutas e imports ---
 HERE = Path(__file__).resolve().parent
@@ -41,7 +41,7 @@ class Block:
     type: str
     text: str
 
-def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
+def parse_markdown(text: str) -> Tuple[List[Block], List[Block], str]:
     lines = text.splitlines()
     blocks: List[Block] = []
     current_para: List[str] = []
@@ -91,7 +91,6 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
 
     return final_blocks, actividades, (title_h1 or "")
 
-
 def clean_inline_md(s: str) -> str:
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s); s = re.sub(r'__(.+?)__', r'\1', s)
     s = re.sub(r'\s*\n\s*', ' ', s)
@@ -124,9 +123,10 @@ class ComicPDF(FPDF):
         
         y_before = self.get_y(); img_path, img_h_mm = self._pil_to_temp_jpg(img, img_w_mm)
         
-        # Dry run para calcular altura del texto
-        self.set_font_size(12)
-        lines = self.multi_cell(text_w, line_height, text_clean, dry_run=True, output='L')
+        # --- INICIO DE LA REPARACIÓN DEL BUG: ValueError ---
+        # Usamos 'LINES' que es el valor correcto, en lugar de 'L'.
+        lines = self.multi_cell(text_w, line_height, text_clean, dry_run=True, output='LINES')
+        # --- FIN DE LA REPARACIÓN ---
         text_h_mm = len(lines) * line_height
 
         if self.get_y() + max(img_h_mm, text_h_mm) > self.page_break_trigger:
@@ -142,13 +142,13 @@ class ComicPDF(FPDF):
         self.multi_cell(text_w, line_height, text_clean, align='J')
         self.set_y(max(y_before + img_h_mm, self.get_y()) + 6)
 
-
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Optional[Image.Image]:
     try:
         image_path = generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model)
         return Image.open(image_path).convert("RGB")
     except Exception as e:
         print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
+        # Devolvemos None para indicar el fallo y evitar errores posteriores
         return None
 
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_path: Optional[str], model: str):
@@ -159,14 +159,11 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
     title = title_h1 or os.path.splitext(os.path.basename(md_path))[0]
     cache_dir = os.path.join(output_folder, "_cache_imgs"); os.makedirs(cache_dir, exist_ok=True)
     pdf = ComicPDF(font_path=font_path); pdf.set_title(title); pdf.add_page()
-
-    has_manual_prompts = any(b.type == 'img' for b in blocks)
     
     pdf.header_title(title)
     
     side = "right"
     for idx, b in enumerate(blocks):
-        # La lógica ahora une la imagen con el siguiente párrafo
         if b.type == 'img':
             if idx + 1 < len(blocks) and blocks[idx + 1].type == 'p':
                 print(f"🎨 Maquetando imagen manual con texto: '{b.text[:50]}...'")
@@ -175,7 +172,7 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
                     pdf.flow_paragraph_with_image(blocks[idx+1].text, img, side=side)
                     side = "left" if side == "right" else "right"
                     time.sleep(1)
-            else: # Imagen sola si no hay párrafo después
+            else:
                 img = obtener_imagen(b.text, cache_dir, model)
                 if img:
                     w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
@@ -184,16 +181,14 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
                     pdf.image(path, x=pdf.l_margin, y=y, w=w); pdf.set_y(y + h + 5)
         
         elif b.type.startswith("h"):
-            # Saltamos el título H1 que ya está en la cabecera
             level = int(b.type[1]);
-            if level == 1: continue
+            if level == 1: continue # El título principal ya está en la cabecera
             pdf.set_font(pdf._font_family, 'B', 22 - 2 * level)
             pdf.multi_cell(0, 10, clean_inline_md(b.text))
             pdf.set_font(pdf._font_family, '', 12); pdf.ln(1)
         
         elif b.type == 'p':
-            # Si el párrafo ya se maquetó junto a una imagen manual, lo saltamos
-            if has_manual_prompts and idx > 0 and blocks[idx-1].type == 'img':
+            if idx > 0 and blocks[idx-1].type == 'img':
                 continue
             pdf.multi_cell(0, 6, clean_inline_md(b.text), align='J'); pdf.ln(4)
 
