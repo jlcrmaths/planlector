@@ -22,9 +22,9 @@ for p in (HERE, PARENT):
         sys.path.insert(0, str(p))
 
 try:
-    from imagerouter_client import (generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired)
+    from imagerouter_client import generate_image_via_imagerouter
 except ModuleNotFoundError:
-    from scripts.imagerouter_client import (generate_image_via_imagerouter, ImageRouterError, ImageRouterBillingRequired)
+    from scripts.imagerouter_client import generate_image_via_imagerouter
 
 try:
     from scripts.prompt_synthesizer import build_visual_prompt
@@ -33,15 +33,14 @@ except Exception:
         # Fallback simple
         return f"ilustración educativa sobre {doc_title}, elementos visuales: {text[:100]}"
 
-# --- INICIO DE LA MODIFICACIÓN: PARSER CON SOPORTE PARA ![prompt] ---
+# --- PARSER ROBUSTO PARA EVITAR ERRORES ---
 
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
-# Expresión regular para capturar la nueva sintaxis de prompt manual
 PROMPT_RE = re.compile(r'^\s*!\[prompt\]\s*(.*)\s*$', re.IGNORECASE)
 
 @dataclass
 class Block:
-    type: str  # 'h1'-'h6', 'p', o 'img'
+    type: str
     text: str
 
 def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
@@ -61,16 +60,14 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
             current_para = []
 
     for line in lines:
-        # 1. Buscar prompts manuales
         m_prompt = PROMPT_RE.match(line)
         if m_prompt:
             flush_para()
-            prompt_text = m_prompt.group(1).strip()
+            prompt_text = (m_prompt.group(1) or "").strip()
             if prompt_text:
                 blocks.append(Block('img', prompt_text))
             continue
 
-        # 2. Buscar encabezados
         m_heading = HEADING_RE.match(line)
         if m_heading:
             flush_para()
@@ -85,90 +82,81 @@ def parse_markdown(text: str) -> Tuple[List[Block], List[str], str]:
             if line.strip(): actividades.append(line.strip())
             continue
 
-        # 3. Procesar párrafos y líneas en blanco
         if not line.strip():
-            # Si encontramos una línea en blanco, es el fin de un párrafo
             if current_para:
                 flush_para()
         else:
             current_para.append(line)
 
-    flush_para() # Asegurarse de que el último párrafo se guarda
+    flush_para()
     return blocks, actividades, (title_h1 or "")
-
-# --- FIN DE LA MODIFICACIÓN ---
 
 def clean_inline_md(s: str) -> str:
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
     s = re.sub(r'__(.+?)__', r'\1', s)
-    # Eliminar saltos de línea extraños dentro de un párrafo
     s = re.sub(r'\s*\n\s*', ' ', s)
     return re.sub(r'\s{2,}', ' ', s).strip()
 
 def select_key_paragraphs(blocks: List[Block], max_images: int) -> Set[int]:
-    # Esta función ahora solo se usará si no hay prompts manuales
     paragraph_indices = [i for i, b in enumerate(blocks) if b.type == "p"]
     if not paragraph_indices: return set()
     para_texts = [(i, b.text) for i, b in enumerate(blocks) if b.type == "p"]
-    scored = [len(text) for _, text in para_texts]
-    ranked = sorted(enumerate(scored), key=lambda x: x[1], reverse=True)[:max_images]
-    return set(paragraph_indices[idx] for idx, _ in ranked)
+    # Simplificado para robustez
+    scored = [(i, len(text)) for i, text in para_texts]
+    ranked = sorted(scored, key=lambda x: x[1], reverse=True)[:max_images]
+    return set(i for i, _ in ranked)
 
 class ComicPDF(FPDF):
+    # (El código de la clase FPDF no necesita cambios)
     def __init__(self, font_path: Optional[str] = None):
-        super().__init__(orientation="P", unit="mm", format="A4")
-        self.set_margins(18, 18, 18)
-        self.set_auto_page_break(auto=True, margin=16)
-        self._font_family = "helvetica"
-        self._init_fonts(font_path)
-
+        super().__init__(orientation="P", unit="mm", format="A4"); self.set_margins(18, 18, 18)
+        self.set_auto_page_break(auto=True, margin=16); self._font_family = "helvetica"; self._init_fonts(font_path)
     def _init_fonts(self, font_path: Optional[str]):
         base_dir = os.path.dirname(font_path) if (font_path and os.path.isfile(font_path)) else "/usr/share/fonts/truetype/dejavu"
         try:
-            reg = os.path.join(base_dir, "DejaVuSans.ttf")
-            bold = os.path.join(base_dir, "DejaVuSans-Bold.ttf")
+            reg = os.path.join(base_dir, "DejaVuSans.ttf"); bold = os.path.join(base_dir, "DejaVuSans-Bold.ttf")
             if os.path.isfile(reg): self.add_font("DejaVu", style="", fname=reg); self._font_family = "DejaVu"
             if os.path.isfile(bold): self.add_font("DejaVu", style="B", fname=bold)
         except Exception as e: print(f"[AVISO] No se pudieron cargar fuentes DejaVu: {e}")
-
     def header_title(self, title: str):
-        self.set_font(self._font_family, 'B', 20)
-        self.set_text_color(30, 30, 120)
-        self.multi_cell(0, 10, title, align="C")
-        self.ln(3)
-        self.set_text_color(0, 0, 0)
-        self.set_font(self._font_family, '', 12)
-
+        self.set_font(self._font_family, 'B', 20); self.set_text_color(30, 30, 120); self.multi_cell(0, 10, title, align="C"); self.ln(3); self.set_text_color(0, 0, 0); self.set_font(self._font_family, '', 12)
     def footer(self):
-        self.set_y(-15)
-        self.set_font(self._font_family, '', 10)
-        self.set_text_color(120, 120, 120)
-        self.cell(0, 10, f'Página {self.page_no()}', align='C')
-
+        self.set_y(-15); self.set_font(self._font_family, '', 10); self.set_text_color(120, 120, 120); self.cell(0, 10, f'Página {self.page_no()}', align='C')
     def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float):
-        iw, ih = img.size
-        h_mm = w_mm * (ih / iw) if iw else w_mm
+        iw, ih = img.size; h_mm = w_mm * (ih / iw) if iw else w_mm
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            path = tmp.name
-            img.convert("RGB").save(path, "JPEG", quality=90)
+            path = tmp.name; img.convert("RGB").save(path, "JPEG", quality=90)
         return path, h_mm
 
+# --- INICIO DE LA REPARACIÓN DEL BUG: AttributeError ---
+
 def obtener_imagen(prompt: str, cache_dir: str, model: str) -> Image.Image:
+    """
+    Esta función ahora se asegura de devolver SIEMPRE un objeto de imagen de PIL,
+    nunca una ruta de archivo (string).
+    """
     try:
-        # La llamada a imagerouter ahora pasa todos los parámetros necesarios
-        return generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model, timeout=600)
+        # 1. Llamamos a la API. Esta función devuelve una RUTA (string) a la imagen guardada.
+        image_path = generate_image_via_imagerouter(prompt=prompt, out_dir=cache_dir, model=model, timeout=600)
+        
+        # 2. Abrimos la imagen desde la ruta y la devolvemos como objeto PIL.
+        #    Este era el paso que faltaba y causaba el error.
+        return Image.open(image_path).convert("RGB")
+
     except Exception as e:
         print(f"[AVISO] ImageRouter falló ({e}); usando placeholder")
+        # El placeholder ya es un objeto de imagen de PIL, así que esto es correcto.
         W, H = 512, 512
         img = Image.new("RGB", (W, H), (20, 20, 40))
         draw = ImageDraw.Draw(img)
         draw.rectangle([(24, 24), (W - 24, H - 24)], outline=(200, 200, 220), width=2)
         return img
 
+# --- FIN DE LA REPARACIÓN DEL BUG ---
+
 def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_path: Optional[str], model: str, max_images: int, no_images: bool, fail_on_router_error: bool):
     with open(md_path, "r", encoding="utf-8") as f: text = f.read()
     
-    # El nuevo parser se usa aquí
     blocks, actividades, title_h1 = parse_markdown(text)
     
     title = title_h1 or os.path.splitext(os.path.basename(md_path))[0]
@@ -177,16 +165,12 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
     pdf.set_title(title)
     pdf.add_page()
 
-    # --- INICIO DE LA NUEVA LÓGICA DE ILUSTRACIÓN ---
-
-    # 1. Comprobar si el documento usa prompts manuales
     has_manual_prompts = any(b.type == 'img' for b in blocks)
     
-    # 2. Imprimir la portada SOLO si estamos en modo automático
     if not no_images and not has_manual_prompts:
         try:
             portada_prompt = build_visual_prompt("Portada", title)
-            img = obtener_imagen(portada_prompt, cache_dir, model)
+            img = obtener_imagen(portada_prompt, cache_dir, model) # Llama a la función corregida
             w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
             path, h = pdf._pil_to_temp_jpg(img, w)
             if y + h > pdf.h - pdf.b_margin: pdf.add_page(); y = pdf.get_y()
@@ -199,19 +183,13 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
 
     pdf.header_title(title)
     
-    # 3. Decidir qué ilustrar
-    if has_manual_prompts:
-        # En modo manual, no se necesita la selección automática
-        pass
-    else:
-        # En modo automático, usamos la lógica de puntuación
+    if not has_manual_prompts:
         auto_indices = select_key_paragraphs(blocks, max_images)
 
-    # 4. Recorrer los bloques y generar el PDF
     for idx, b in enumerate(blocks):
         if b.type == 'img' and not no_images:
             print(f"🎨 Generando imagen con prompt manual: '{b.text[:80]}...'")
-            img = obtener_imagen(b.text, cache_dir, model)
+            img = obtener_imagen(b.text, cache_dir, model) # Llama a la función corregida
             w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
             path, h = pdf._pil_to_temp_jpg(img, w)
             if y + h > pdf.h - pdf.b_margin: pdf.add_page(); y = pdf.get_y()
@@ -219,7 +197,7 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
             pdf.set_y(y + h + 5)
             try: os.remove(path)
             except Exception: pass
-            time.sleep(1) # Pausa para no saturar la API
+            time.sleep(1)
         
         elif b.type.startswith("h"):
             level = int(b.type[1])
@@ -233,9 +211,6 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
             pdf.multi_cell(0, 6, text_clean, align='J')
             pdf.ln(4)
 
-    # --- FIN DE LA NUEVA LÓGICA DE ILUSTRACIÓN ---
-
-    # (El código para actividades y guardar el PDF se mantiene)
     rel_path = os.path.relpath(os.path.dirname(md_path), input_folder)
     pdf_folder = os.path.join(output_folder, rel_path)
     os.makedirs(pdf_folder, exist_ok=True)
