@@ -37,7 +37,6 @@ def _clean(s: Optional[str]) -> str:
 
 
 def _ensure_png(img_bytes: bytes) -> bytes:
-    """Abre con PIL (webp/jpg/png/…) y devuelve PNG bytes."""
     try:
         im = Image.open(BytesIO(img_bytes))
         if im.mode not in ("RGB", "L", "P", "RGBA"):
@@ -48,8 +47,6 @@ def _ensure_png(img_bytes: bytes) -> bytes:
     except Exception:
         return img_bytes
 
-
-# (Las funciones para Runware, Hugging Face, y OpenAI se mantienen igual)
 def _post_runware_http(api_url: str, api_key: str, prompt: str, model: str, width: int, height: int, steps: int, timeout: int) -> bytes:
     headers = {"Authorization": f"Bearer {_clean(api_key)}","Content-Type": "application/json"}
     mdl = model or os.getenv("RUNWARE_MODEL", "runware:101@1")
@@ -98,18 +95,11 @@ def _post_openai_images(endpoint: str, api_key: str, payload: dict, timeout: int
             return _ensure_png(r.content)
     raise ImageRouterError("OpenAI-style: respuesta sin imagen.")
 
-
-# ---------- (Opcional) AI Horde ----------
 def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, height: int, steps: int, timeout: int) -> bytes:
     headers = {"apikey": _clean(api_key) or "0000000000"}
     payload = {
         "prompt": prompt,
-        "params": {
-            "width": width,
-            "height": height,
-            "steps": max(1, min(steps, 20)),
-            "cfg_scale": 5.0
-        },
+        "params": { "width": width, "height": height, "steps": max(1, min(steps, 20)), "cfg_scale": 5.0 },
         "n": 1, "r2": True,
         "nsfw": True, "censor_nsfw": False
     }
@@ -137,17 +127,9 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
         b64 = img_field.split(",", 1)[1]; return _ensure_png(base64.b64decode(b64))
     return _ensure_png(base64.b64decode(img_field))
 
-
-# ---------- Router principal ----------
 def generate_image_via_imagerouter(
-    prompt: str,
-    out_dir: str,
-    model: str = "",
-    size: str = "1024x768",
-    guidance: float = 4.0,
-    steps: int = 12,
-    seed: Optional[int] = None,
-    timeout: int = 300
+    prompt: str, out_dir: str, model: str = "", size: str = "1024x768",
+    guidance: float = 4.0, steps: int = 12, seed: Optional[int] = None, timeout: int = 300
 ) -> str:
     provider = os.getenv("IMAGEROUTER_PROVIDER", "runware").strip().lower()
     pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -158,12 +140,9 @@ def generate_image_via_imagerouter(
     except Exception:
         w, h = 1024, 768
 
-    # --- INICIO DE LA MODIFICACIÓN ---
-    # Si el proveedor es AI Horde, forzamos un tamaño seguro para evitar el error de kudos
     if provider == "aihorde":
         w = 512
         h = 512
-    # --- FIN DE LA MODIFICACIÓN ---
 
     if provider == "runware":
         api_url = _clean(os.getenv("RUNWARE_API_URL")) or "https://api.runware.ai/v1"
