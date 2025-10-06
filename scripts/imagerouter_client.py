@@ -13,7 +13,7 @@ ENV principales:
   IMAGEROUTER_PROVIDER = runware | huggingface | openai | aihorde
   RUNWARE_API_URL      = https://api.runware.ai/v1
   RUNWARE_API_KEY      = <tu_key>
-  RUNWARE_MODEL        = runware:101@1   (por defecto; cambia si quieres SDXL/FLUX/etc.)
+  RUNWARE_MODEL        = runware:101@1    (por defecto; cambia si quieres SDXL/FLUX/etc.)
 """
 
 import os
@@ -175,7 +175,8 @@ def _post_aihorde_http(base_url: str, prompt: str, api_key: str, width: int, hei
             "steps": max(1, min(steps, 20)),
             "cfg_scale": 5.0
         },
-        "n": 1, "r2": True, "nsfw": False, "censor_nsfw": True
+        "n": 1, "r2": True,
+        "nsfw": True, "censor_nsfw": False  # <--- ESTA ES LA LÍNEA MODIFICADA
     }
     r = requests.post(f"{base_url.rstrip('/')}/generate/async", headers=headers, json=payload, timeout=timeout)
     if r.status_code >= 400:
