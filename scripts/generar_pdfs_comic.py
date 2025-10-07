@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from pathlib import Path
 from fpdf import FPDF
+from fpdf.enums import XPos, YPos
 from PIL import Image
 
 # --- Configuración de rutas e imports ---
@@ -112,18 +113,21 @@ class ComicPDF(FPDF):
         try:
             reg = os.path.join(base_dir, "DejaVuSans.ttf")
             bold = os.path.join(base_dir, "DejaVuSans-Bold.ttf")
+            italic = os.path.join(base_dir, "DejaVuSans-Oblique.ttf")
             if os.path.isfile(reg):
                 self.add_font("DejaVu", style="", fname=reg)
                 self._font_family = "DejaVu"
             if os.path.isfile(bold):
                 self.add_font("DejaVu", style="B", fname=bold)
+            if os.path.isfile(italic):
+                self.add_font("DejaVu", style="I", fname=italic)
         except Exception as e:
             print(f"[AVISO] No se pudieron cargar fuentes DejaVu: {e}")
 
     def header_title(self, title: str):
         self.set_font(self._font_family, 'B', 22)
         self.set_text_color(0, 102, 204)
-        self.cell(0, 12, title, ln=True, align="C")
+        self.cell(0, 12, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
         self.ln(4)
         self.set_text_color(0, 0, 0)
         self.set_font(self._font_family, '', 12)
