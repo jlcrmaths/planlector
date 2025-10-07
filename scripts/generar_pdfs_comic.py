@@ -4,7 +4,7 @@
 Script para generar PDFs educativos a partir de archivos Markdown (.md)
 con formato limpio, colores, portada y recuadros de ilustración opcionales.
 
-Autor: versión educativa mejorada por ChatGPT
+Versión estable sin errores de ancho (multi_cell -> cell en portada)
 """
 
 import os
@@ -76,21 +76,20 @@ def parse_markdown(text: str) -> Tuple[List[Block], str]:
     flush_para()
     return blocks, (title_h1 or "Documento educativo")
 
+# --- Clase PDF con estilo educativo ---
 class EduPDF(FPDF):
     def __init__(self):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.set_margins(20, 20, 20)
         self.set_auto_page_break(auto=True, margin=15)
 
-        # ✅ Fuente Unicode
+        # ✅ Fuente Unicode (DejaVu)
         try:
-            # usa DejaVuSans si está disponible en el sistema
-            self.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", uni=True)
-            self.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", uni=True)
+            self.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+            self.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
             self.set_font("DejaVu", size=12)
             self._font_family = "DejaVu"
         except Exception:
-            # fallback a Helvetica si no existe (sin acentos)
             self.set_font("Helvetica", size=12)
             self._font_family = "Helvetica"
 
@@ -108,33 +107,46 @@ class EduPDF(FPDF):
         self.set_text_color(120, 120, 120)
         self.cell(0, 10, f"Página {self.page_no()}", align="C")
 
-    # --- Portada segura con Unicode ---
+    # --- Portada robusta (sin errores de ancho) ---
     def portada(self, titulo: str):
         self.add_page()
         titulo = str(titulo or "Documento educativo").strip()
-        self.set_font(self._font_family, "B", 24)
-        self.set_text_color(0, 102, 204)
-        self.cell(0, 80, "", new_y=YPos.NEXT)
+        if not titulo:
+            titulo = "Documento educativo"
 
-        # ✅ dividir el título en líneas seguras y forzar salto
+        # Configuración visual
+        self.set_font(self._font_family, "B", 26)
+        self.set_text_color(0, 102, 204)
+
+        # Espacio superior
+        self.ln(70)
+
+        # ✅ dividir el título en fragmentos y centrar con cell()
+        max_len = 40
         palabras = titulo.replace("\n", " ").split()
-        linea = ""
+        linea, lineas = "", []
         for palabra in palabras:
-            if len(linea + " " + palabra) > 40:
-                self.multi_cell(0, 12, linea.strip(), align="C")
+            if len(linea + " " + palabra) > max_len:
+                lineas.append(linea.strip())
                 linea = palabra
             else:
                 linea += " " + palabra
         if linea:
-            self.multi_cell(0, 12, linea.strip(), align="C")
+            lineas.append(linea.strip())
 
+        for l in lineas:
+            self.cell(0, 15, l, align="C", new_y=YPos.NEXT)
+
+        # Subtítulo
         self.set_text_color(0, 0, 0)
         self.ln(10)
         self.set_font(self._font_family, "", 14)
-        self.multi_cell(0, 10, "Material educativo generado automáticamente", align="C")
-        self.ln(20)
+        self.cell(0, 10, "Material educativo generado automáticamente", align="C", new_y=YPos.NEXT)
+        self.ln(5)
         self.set_font(self._font_family, "I", 12)
-        self.multi_cell(0, 8, "Proyecto de aprendizaje por retos", align="C")
+        self.cell(0, 10, "Proyecto de aprendizaje por retos", align="C", new_y=YPos.NEXT)
+
+        # Nueva página
         self.add_page()
 
     def add_heading(self, text: str, level: int):
@@ -161,66 +173,6 @@ class EduPDF(FPDF):
                         align="C", fill=True)
         self.ln(6)
         self.set_font(self._font_family, "", 12)
-
-
-    # --- Portada ---
-    def portada(self, titulo: str):
-        self.add_page()
-        titulo = str(titulo).strip()
-        if not titulo:
-            titulo = "Documento educativo"
-
-        # Configuración visual
-        self.set_font("Helvetica", "B", 24)
-        self.set_text_color(0, 102, 204)
-        self.cell(0, 80, "", new_y=YPos.NEXT)
-
-        # Controlar que el texto no desborde el ancho
-        try:
-            self.multi_cell(0, 15, titulo, align="C")
-        except Exception:
-            # Si el texto es muy largo, reducir tamaño y dividir
-            self.set_font("Helvetica", "B", 18)
-            partes = [titulo[i:i+60] for i in range(0, len(titulo), 60)]
-            for parte in partes:
-                self.multi_cell(0, 12, parte, align="C")
-
-        # Subtítulo y créditos
-        self.set_text_color(0, 0, 0)
-        self.ln(10)
-        self.set_font("Helvetica", "", 14)
-        self.multi_cell(0, 10, "Material educativo generado automáticamente", align="C")
-        self.ln(20)
-        self.set_font("Helvetica", "I", 12)
-        self.multi_cell(0, 8, "Proyecto de aprendizaje por retos", align="C")
-        self.add_page()
-
-
-    # --- Bloques de texto ---
-    def add_heading(self, text: str, level: int):
-        colors = {2: (255, 140, 0), 3: (0, 102, 204), 4: (0, 150, 100)}
-        color = colors.get(level, (0, 0, 0))
-        self.set_text_color(*color)
-        self.set_font("Helvetica", "B", 22 - 2 * level)
-        self.multi_cell(0, 10, clean_inline_md(text))
-        self.ln(2)
-        self.set_font("Helvetica", "", 12)
-        self.set_text_color(0, 0, 0)
-
-    def add_paragraph(self, text: str):
-        self.set_font("Helvetica", "", 12)
-        self.multi_cell(0, 7, clean_inline_md(text), align="J")
-        self.ln(4)
-
-    # --- Bloques de ilustración (sin imágenes IA) ---
-    def add_prompt_box(self, description: str):
-        self.set_fill_color(240, 240, 240)
-        self.set_draw_color(200, 200, 200)
-        self.set_font("Helvetica", "I", 10)
-        self.multi_cell(0, 7, f"💡 Ilustración sugerida:\n{clean_inline_md(description)}",
-                        align="C", fill=True)
-        self.ln(6)
-        self.set_font("Helvetica", "", 12)
 
 # --- Función principal de generación ---
 def generar_pdf_educativo(md_path: str, input_folder: str, output_folder: str):
@@ -267,3 +219,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
