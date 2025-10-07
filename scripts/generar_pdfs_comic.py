@@ -101,10 +101,26 @@ class EduPDF(FPDF):
     # --- Portada ---
     def portada(self, titulo: str):
         self.add_page()
-        self.set_font("Helvetica", "B", 26)
+        titulo = str(titulo).strip()
+        if not titulo:
+            titulo = "Documento educativo"
+
+        # Configuración visual
+        self.set_font("Helvetica", "B", 24)
         self.set_text_color(0, 102, 204)
         self.cell(0, 80, "", new_y=YPos.NEXT)
-        self.multi_cell(0, 15, titulo, align="C")
+
+        # Controlar que el texto no desborde el ancho
+        try:
+            self.multi_cell(0, 15, titulo, align="C")
+        except Exception:
+            # Si el texto es muy largo, reducir tamaño y dividir
+            self.set_font("Helvetica", "B", 18)
+            partes = [titulo[i:i+60] for i in range(0, len(titulo), 60)]
+            for parte in partes:
+                self.multi_cell(0, 12, parte, align="C")
+
+        # Subtítulo y créditos
         self.set_text_color(0, 0, 0)
         self.ln(10)
         self.set_font("Helvetica", "", 14)
@@ -113,6 +129,7 @@ class EduPDF(FPDF):
         self.set_font("Helvetica", "I", 12)
         self.multi_cell(0, 8, "Proyecto de aprendizaje por retos", align="C")
         self.add_page()
+
 
     # --- Bloques de texto ---
     def add_heading(self, text: str, level: int):
