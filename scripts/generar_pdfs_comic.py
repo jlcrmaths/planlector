@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script para generar PDFs educativos a partir de archivos Markdown (.md)
-con formato limpio, colores, portada y recuadros de ilustración opcionales.
-
-Versión estable sin errores de ancho (multi_cell -> cell en portada)
+Genera PDFs educativos desde Markdown.
+Versión robusta: detección de fuentes (regular/bold/italic),
+fallback seguro y portada que no rompe por títulos largos/caracteres.
 """
 
 import os
@@ -21,20 +20,17 @@ from fpdf.enums import XPos, YPos
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 PROMPT_RE = re.compile(r'^\s*!\[prompt\]\s*(.*)\s*$', re.IGNORECASE)
 
-# --- Datos estructurados ---
 @dataclass
 class Block:
     type: str
     text: str
 
-# --- Función para limpiar texto inline Markdown ---
 def clean_inline_md(s: str) -> str:
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
     s = re.sub(r'__(.+?)__', r'\1', s)
     s = re.sub(r'\s*\n\s*', ' ', s)
     return re.sub(r'\s{2,}', ' ', s).strip()
 
-# --- Función para parsear el Markdown ---
 def parse_markdown(text: str) -> Tuple[List[Block], str]:
     lines = text.splitlines()
     blocks: List[Block] = []
@@ -76,105 +72,177 @@ def parse_markdown(text: str) -> Tuple[List[Block], str]:
     flush_para()
     return blocks, (title_h1 or "Documento educativo")
 
-# --- Clase PDF con estilo educativo ---
+# --- Clase EduPDF robusta ---
 class EduPDF(FPDF):
     def __init__(self):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.set_margins(20, 20, 20)
         self.set_auto_page_break(auto=True, margin=15)
 
-        # ✅ Fuente Unicode (DejaVu)
-        try:
-            self.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-            self.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-            self.set_font("DejaVu", size=12)
-            self._font_family = "DejaVu"
-        except Exception:
-            self.set_font("Helvetica", size=12)
-            self._font_family = "Helvetica"
+        # Estarán registradas las variantes que encontremos: '', 'B', 'I'
+        self._available_styles = set()
+        self._font_family = "Helvetica"
 
+        # Rutas donde buscar fuentes (incluye una carpeta 'fonts' del proyecto)
+        font_dirs = []
+        if os.getenv("FONT_PATH"):
+            font_dirs.append(os.getenv("FONT_PATH"))
+        font_dirs += [
+            "/usr/share/fonts/truetype/dejavu",
+            "/usr/share/fonts/truetype/liberation",
+            "/usr/share/fonts/truetype",
+            str(Path(__file__).resolve().parent / "fonts"),
+        ]
+
+        # Intentar registrar DejaVu (regular/bold/italic)
+        registered = False
+        for base in font_dirs:
+            reg = os.path.join(base, "DejaVuSans.ttf")
+            bold = os.path.join(base, "DejaVuSans-Bold.ttf")
+            italic = os.path.join(base, "DejaVuSans-Oblique.ttf")
+            try:
+                if os.path.isfile(reg):
+                    # registrar la familia DejaVu con las variantes que existan
+                    try:
+                        self.add_font("DejaVu", "", reg)
+                        self._available_styles.add('')
+                    except Exception:
+                        pass
+                    if os.path.isfile(bold):
+                        try:
+                            self.add_font("DejaVu", "B", bold)
+                            self._available_styles.add('B')
+                        except Exception:
+                            pass
+                    if os.path.isfile(italic):
+                        try:
+                            self.add_font("DejaVu", "I", italic)
+                            self._available_styles.add('I')
+                        except Exception:
+                            pass
+                    self._font_family = "DejaVu"
+                    registered = True
+                    break
+            except Exception:
+                continue
+
+        # Si no registramos DejaVu, usamos la fuente integrada (Helvetica)
+        if not registered:
+            # built-in fonts: Helvetica está disponible sin add_font
+            self._font_family = "Helvetica"
+            # asumimos '' y 'B' disponibles; 'I' puede que no. Protegemos vía _set_font.
+            self._available_styles = {'', 'B'}
+
+        # establecer fuente por defecto a un tamaño razonable
+        # usamos super().set_font para evitar la comprobación en _set_font que aún no existe
+        super().set_font(self._font_family, '', 12)
+
+    def _set_font(self, style: str = '', size: int = 12):
+        """Establece la fuente usando una variante disponible; si la solicitada
+        no existe, aplica un fallback seguro."""
+        style = (style or '')
+        if style not in self._available_styles:
+            # preferimos regular, luego bold, luego lo que haya
+            if '' in self._available_styles:
+                style_to_use = ''
+            elif 'B' in self._available_styles:
+                style_to_use = 'B'
+            else:
+                # si no hay nada registrado, usar '' (built-in)
+                style_to_use = ''
+        else:
+            style_to_use = style
+        super().set_font(self._font_family, style_to_use, size)
+
+    # Encabezado y pie (usamos _set_font para proteger estilos)
     def header(self):
         if self.page_no() == 1:
-            return  # sin encabezado en la portada
-        self.set_font(self._font_family, "B", 10)
+            return
+        self._set_font('B', 10)
         self.set_text_color(0, 102, 204)
-        self.cell(0, 10, self.title, align="C", new_y=YPos.NEXT)
+        # titulado centrado en el header
+        # usamos cell() porque es robusto
+        self.cell(0, 10, getattr(self, "title", ""), align="C", new_y=YPos.NEXT)
         self.set_text_color(0, 0, 0)
 
     def footer(self):
         self.set_y(-15)
-        self.set_font(self._font_family, "", 10)
+        self._set_font('', 10)
         self.set_text_color(120, 120, 120)
         self.cell(0, 10, f"Página {self.page_no()}", align="C")
 
-    # --- Portada robusta (sin errores de ancho) ---
+    # --- Portada robusta (sin multi_cell problemático) ---
     def portada(self, titulo: str):
         self.add_page()
         titulo = str(titulo or "Documento educativo").strip()
         if not titulo:
             titulo = "Documento educativo"
 
-        # Configuración visual
-        self.set_font(self._font_family, "B", 26)
+        self._set_font('B', 26)
         self.set_text_color(0, 102, 204)
 
-        # Espacio superior
+        # espacio superior
         self.ln(70)
 
-        # ✅ dividir el título en fragmentos y centrar con cell()
-        max_len = 40
+        # dividir por palabras en líneas de longitud controlada (por carácter)
+        max_chars = 40
         palabras = titulo.replace("\n", " ").split()
-        linea, lineas = "", []
+        linea = ""
+        lineas = []
         for palabra in palabras:
-            if len(linea + " " + palabra) > max_len:
-                lineas.append(linea.strip())
+            if len((linea + " " + palabra).strip()) > max_chars:
+                if linea:
+                    lineas.append(linea.strip())
                 linea = palabra
             else:
-                linea += " " + palabra
+                linea = (linea + " " + palabra).strip()
         if linea:
             lineas.append(linea.strip())
 
         for l in lineas:
+            # cell() no falla por "no espacio horizontal"
             self.cell(0, 15, l, align="C", new_y=YPos.NEXT)
 
-        # Subtítulo
+        # subtítulo
         self.set_text_color(0, 0, 0)
         self.ln(10)
-        self.set_font(self._font_family, "", 14)
+        self._set_font('', 14)
         self.cell(0, 10, "Material educativo generado automáticamente", align="C", new_y=YPos.NEXT)
         self.ln(5)
-        self.set_font(self._font_family, "I", 12)
+        # usar italic si está disponible, si no, caerá a regular/ó bold según _set_font
+        self._set_font('I', 12)
         self.cell(0, 10, "Proyecto de aprendizaje por retos", align="C", new_y=YPos.NEXT)
 
-        # Nueva página
+        # nueva página para contenido
         self.add_page()
 
     def add_heading(self, text: str, level: int):
         colors = {2: (255, 140, 0), 3: (0, 102, 204), 4: (0, 150, 100)}
         color = colors.get(level, (0, 0, 0))
         self.set_text_color(*color)
-        self.set_font(self._font_family, "B", 22 - 2 * level)
+        # tamaño según nivel (protección con _set_font)
+        size = max(10, 22 - 2 * level)
+        self._set_font('B', size)
         self.multi_cell(0, 10, clean_inline_md(text))
         self.ln(2)
-        self.set_font(self._font_family, "", 12)
+        self._set_font('', 12)
         self.set_text_color(0, 0, 0)
 
     def add_paragraph(self, text: str):
-        self.set_font(self._font_family, "", 12)
+        self._set_font('', 12)
         self.multi_cell(0, 7, clean_inline_md(text), align="J")
         self.ln(4)
 
     def add_prompt_box(self, description: str):
         self.set_fill_color(240, 240, 240)
         self.set_draw_color(200, 200, 200)
-        self.set_font(self._font_family, "I", 10)
-        self.multi_cell(0, 7,
-                        f"💡 Ilustración sugerida:\n{clean_inline_md(description)}",
-                        align="C", fill=True)
+        # intentar italic, pero si no está, _set_font hará fallback
+        self._set_font('I', 10)
+        # dibujar caja con multi_cell (texto centrado)
+        self.multi_cell(0, 7, f"💡 Ilustración sugerida:\n{clean_inline_md(description)}", align="C", fill=True)
         self.ln(6)
-        self.set_font(self._font_family, "", 12)
+        self._set_font('', 12)
 
-# --- Función principal de generación ---
 def generar_pdf_educativo(md_path: str, input_folder: str, output_folder: str):
     with open(md_path, "r", encoding="utf-8") as f:
         text = f.read()
@@ -200,7 +268,6 @@ def generar_pdf_educativo(md_path: str, input_folder: str, output_folder: str):
     pdf.output(output_pdf)
     print(f"✅ PDF educativo generado: {output_pdf}")
 
-# --- Main ---
 def main():
     parser = argparse.ArgumentParser(description="Genera PDFs educativos desde archivos Markdown.")
     parser.add_argument("--input-folder", default="historias")
@@ -219,4 +286,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
