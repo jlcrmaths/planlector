@@ -76,27 +76,92 @@ def parse_markdown(text: str) -> Tuple[List[Block], str]:
     flush_para()
     return blocks, (title_h1 or "Documento educativo")
 
-# --- Clase PDF con estilo educativo ---
 class EduPDF(FPDF):
     def __init__(self):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.set_margins(20, 20, 20)
         self.set_auto_page_break(auto=True, margin=15)
-        self.set_font("Helvetica", size=12)
+
+        # ✅ Fuente Unicode
+        try:
+            # usa DejaVuSans si está disponible en el sistema
+            self.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", uni=True)
+            self.add_font("DejaVu", "B", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", uni=True)
+            self.set_font("DejaVu", size=12)
+            self._font_family = "DejaVu"
+        except Exception:
+            # fallback a Helvetica si no existe (sin acentos)
+            self.set_font("Helvetica", size=12)
+            self._font_family = "Helvetica"
 
     def header(self):
         if self.page_no() == 1:
             return  # sin encabezado en la portada
-        self.set_font("Helvetica", "B", 10)
+        self.set_font(self._font_family, "B", 10)
         self.set_text_color(0, 102, 204)
         self.cell(0, 10, self.title, align="C", new_y=YPos.NEXT)
         self.set_text_color(0, 0, 0)
 
     def footer(self):
         self.set_y(-15)
-        self.set_font("Helvetica", "", 10)
+        self.set_font(self._font_family, "", 10)
         self.set_text_color(120, 120, 120)
         self.cell(0, 10, f"Página {self.page_no()}", align="C")
+
+    # --- Portada segura con Unicode ---
+    def portada(self, titulo: str):
+        self.add_page()
+        titulo = str(titulo or "Documento educativo").strip()
+        self.set_font(self._font_family, "B", 24)
+        self.set_text_color(0, 102, 204)
+        self.cell(0, 80, "", new_y=YPos.NEXT)
+
+        # ✅ dividir el título en líneas seguras y forzar salto
+        palabras = titulo.replace("\n", " ").split()
+        linea = ""
+        for palabra in palabras:
+            if len(linea + " " + palabra) > 40:
+                self.multi_cell(0, 12, linea.strip(), align="C")
+                linea = palabra
+            else:
+                linea += " " + palabra
+        if linea:
+            self.multi_cell(0, 12, linea.strip(), align="C")
+
+        self.set_text_color(0, 0, 0)
+        self.ln(10)
+        self.set_font(self._font_family, "", 14)
+        self.multi_cell(0, 10, "Material educativo generado automáticamente", align="C")
+        self.ln(20)
+        self.set_font(self._font_family, "I", 12)
+        self.multi_cell(0, 8, "Proyecto de aprendizaje por retos", align="C")
+        self.add_page()
+
+    def add_heading(self, text: str, level: int):
+        colors = {2: (255, 140, 0), 3: (0, 102, 204), 4: (0, 150, 100)}
+        color = colors.get(level, (0, 0, 0))
+        self.set_text_color(*color)
+        self.set_font(self._font_family, "B", 22 - 2 * level)
+        self.multi_cell(0, 10, clean_inline_md(text))
+        self.ln(2)
+        self.set_font(self._font_family, "", 12)
+        self.set_text_color(0, 0, 0)
+
+    def add_paragraph(self, text: str):
+        self.set_font(self._font_family, "", 12)
+        self.multi_cell(0, 7, clean_inline_md(text), align="J")
+        self.ln(4)
+
+    def add_prompt_box(self, description: str):
+        self.set_fill_color(240, 240, 240)
+        self.set_draw_color(200, 200, 200)
+        self.set_font(self._font_family, "I", 10)
+        self.multi_cell(0, 7,
+                        f"💡 Ilustración sugerida:\n{clean_inline_md(description)}",
+                        align="C", fill=True)
+        self.ln(6)
+        self.set_font(self._font_family, "", 12)
+
 
     # --- Portada ---
     def portada(self, titulo: str):
