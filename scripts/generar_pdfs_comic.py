@@ -212,8 +212,12 @@ class EduPDF(FPDF):
         self.set_x(self.l_margin)
 
     def _make_breakable(self, s: str, every: int = 30) -> str:
-        # Inserta U+200B tras cada "every" caracteres no blancos consecutivos para permitir saltos
-        return re.sub(r'(\S{' + str(every) + r'})(?=\S)', r'\1\u200b', s)
+        """Inserta U+200B tras cada `every` caracteres no blancos consecutivos para permitir saltos.
+        Usamos lambda en re.sub para evitar escapes inválidos en la plantilla de reemplazo.
+        """
+        pattern = re.compile(r'(\S{' + str(every) + r'})(?=\S)')
+        ZWSP = '\u200b'
+        return pattern.sub(lambda m: m.group(1) + ZWSP, s)
 
     def _safe_multicell(self, h: float, txt: str, **kwargs):
         # Recoloca X al margen izquierdo y usa el ancho efectivo
