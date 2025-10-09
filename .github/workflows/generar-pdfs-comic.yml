@@ -1,51 +1,54 @@
-name: Generar PDFs (fallback AI Horde)
+# Nombre del flujo de trabajo que aparecerá en la pestaña "Actions" de GitHub
+name: Generar PDFs con Google Gemini
 
+# Define cuándo se ejecutará este flujo de trabajo
 on:
+  # Se activa cada vez que haces un "push" a la rama "main"
   push:
-    paths:
-      - 'historias/**/*.md'
-      - 'scripts/**'
-      - '.github/workflows/generar-pdfs-comic.yml'
-      - 'requirements.txt'
+    branches:
+      - main
+  # También permite ejecutarlo manualmente desde la pestaña "Actions"
   workflow_dispatch:
 
+# Define los trabajos (jobs) que se van a ejecutar
 jobs:
-  generar_pdfs:
+  build-pdfs:
+    # El tipo de máquina virtual que se usará para ejecutar el trabajo
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Aumentamos el tiempo máximo por si la generación de imágenes tarda
+    timeout-minutes: 20
+
+    # La secuencia de pasos (steps) que se ejecutarán en el trabajo
     steps:
-      - name: Checkout
+      # Paso 1: Descargar tu código del repositorio a la máquina virtual
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      # Paso 2: Configurar el entorno de Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11' 
 
-      - name: Instalar dependencias
+      # Paso 3: Instalar todas las librerías necesarias del archivo requirements.txt
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generar PDFs ilustrados (AI Horde)
+      # Paso 4: Ejecutar el script principal para generar los PDFs
+      # Este es el paso CRUCIAL y diferente.
+      - name: Run PDF generation script
+        # La sección 'env' le da al script acceso a tu clave de API secreta de Google.
         env:
-          FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        # El comando que ejecuta tu script
+        run: python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
 
-          # Proveedor gratuito
-          IMAGEROUTER_PROVIDER: aihorde
-          IMAGEROUTER_BASE_URL: https://aihorde.net/api/v2
-          # La siguiente línea usa el secreto que guardaste en GitHub
-          IMAGEROUTER_API_KEY: ${{ secrets.AIHORDE_API_KEY }}
-          MAX_IMAGES: '4'
-        run: |
-          mkdir -p pdfs_generados
-          python scripts/generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
-
-      - name: Subir PDFs como artefacto
+      # Paso 5: Subir los PDFs generados como un artefacto para poder descargarlos
+      - name: Upload generated PDFs
         uses: actions/upload-artifact@v4
         with:
-          name: pdfs-comic
-          path: |
-            pdfs_generados/**/*.pdf
-            pdfs_generados/*.pdf
-          if-no-files-found: error
+          name: PDFs-Generados
+          path: pdfs_generados/
+          if-no-files-found: warn # Avisa si no encuentra PDFs, pero no falla
