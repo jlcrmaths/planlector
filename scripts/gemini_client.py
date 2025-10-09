@@ -7,32 +7,20 @@ from PIL import Image
 import io
 import pathlib
 
-# --- CONFIGURACIÓN DE LA API DE GEMINI (MÁS ROBUSTA) ---
+# --- CONFIGURACIÓN DE LA API DE GEMINI (SIMPLE Y DIRECTA) ---
 
-# 1. La fuente principal de la clave es el secret de GitHub.
+# El script AHORA SOLO buscará la clave en el entorno de ejecución.
+# Esto es lo que GitHub Actions configura con el archivo .yml.
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-# 2. Si no la encuentra (probablemente en un entorno local), intenta usar dotenv.
 if not GOOGLE_API_KEY:
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-        GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-        print("🔑 Clave de API cargada desde el archivo .env local.")
-    except ImportError:
-        # No pasa nada si dotenv no está, simplemente no se usa.
-        pass
-
-# 3. Comprobación final. Si no hay clave, el programa se detiene.
-if not GOOGLE_API_KEY:
-    print("🚨 ERROR FATAL: No se encontró la variable de entorno GOOGLE_API_KEY.")
-    print("   Asegúrate de haber configurado el 'secret' en tu repositorio de GitHub.")
-    # Salimos del script para evitar más errores.
-    sys.exit(1)
+    print("🚨 ERROR FATAL: No se encontró la variable de entorno GOOGLE_API_KEY en el entorno de ejecución.")
+    print("   Por favor, asegúrate de que tu archivo .github/workflows/main.yml contiene el bloque 'env:' para pasar el secret.")
+    sys.exit(1) # Detiene la ejecución si no hay clave.
 
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    print("✅ Cliente de Gemini configurado correctamente.")
+    print("✅ Cliente de Gemini configurado correctamente con la clave proporcionada.")
 except Exception as e:
     print(f"🚨 ERROR: La clave de API parece ser inválida. Error de Google: {e}")
     sys.exit(1)
@@ -47,6 +35,7 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
     print(f"🎨 Enviando prompt a Gemini: '{prompt[:90]}...'")
     
     try:
+        # Usamos un modelo estable y de alta calidad
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         
         full_prompt = f"Una ilustración digital para un libro educativo de matemáticas para adolescentes. La escena debe representar: {prompt}. Estilo claro, colores vivos, sin texto, firmas ni marcas de agua."
@@ -67,5 +56,5 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
         return out_path
 
     except Exception as e:
-        print(f"🚨 ERROR al generar imagen con Gemini: {e}")
+        print(f"🚨 ERROR al generar imagen con Gemini. Respuesta de la API: {getattr(e, 'response', e)}")
         raise ConnectionError(f"Fallo en la API de Gemini: {e}")
