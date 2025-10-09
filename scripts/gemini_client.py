@@ -9,14 +9,12 @@ import pathlib
 
 # --- CONFIGURACIÓN DE LA API DE GEMINI (SIMPLE Y DIRECTA) ---
 
-# El script AHORA SOLO buscará la clave en el entorno de ejecución.
-# Esto es lo que GitHub Actions configura con el archivo .yml.
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 if not GOOGLE_API_KEY:
     print("🚨 ERROR FATAL: No se encontró la variable de entorno GOOGLE_API_KEY en el entorno de ejecución.")
     print("   Por favor, asegúrate de que tu archivo .github/workflows/main.yml contiene el bloque 'env:' para pasar el secret.")
-    sys.exit(1) # Detiene la ejecución si no hay clave.
+    sys.exit(1)
 
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
@@ -36,9 +34,9 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
     
     try:
         # --- INICIO DE LA CORRECCIÓN FINAL ---
-        # Usamos el modelo 'gemini-1.5-pro-latest', que es el modelo multimodal
-        # más potente y estable que soporta la generación de contenido de esta manera.
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        # Usamos 'gemini-pro-vision', el modelo multimodal estándar y estable
+        # diseñado para entender y generar contenido a partir de texto e imágenes.
+        model = genai.GenerativeModel('gemini-pro-vision')
         # --- FIN DE LA CORRECCIÓN FINAL ---
         
         full_prompt = f"Genera una ilustración digital para un libro educativo de matemáticas para adolescentes. La escena debe representar: {prompt}. Estilo claro, colores vivos, sin texto, firmas ni marcas de agua."
