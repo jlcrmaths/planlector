@@ -130,6 +130,7 @@ def obtener_imagen(prompt: str, cache_dir: str) -> Optional[Image.Image]:
     try:
         image_path = generate_image_with_gemini(prompt=prompt, out_dir=cache_dir)
         return Image.open(image_path).convert("RGB")
+        time.sleep(15) # Pausa de 15 segundos para no saturar la API
     except Exception as e:
         print(f"🚨 [ERROR FATAL] No se pudo obtener la imagen de Gemini: {e}")
         return None
