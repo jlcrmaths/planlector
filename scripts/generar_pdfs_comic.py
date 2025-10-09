@@ -22,13 +22,12 @@ for p in (HERE, PARENT):
         sys.path.insert(0, str(p))
 
 try:
-    # Cambiamos el import para usar nuestro nuevo cliente de Gemini
+    # Usamos el nuevo cliente de Gemini
     from gemini_client import generate_image_with_gemini
 except ModuleNotFoundError:
     from scripts.gemini_client import generate_image_with_gemini
 
-
-# --- Parser robusto ---
+# --- Parser ---
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 PROMPT_RE = re.compile(r'^\s*!\[prompt\]\s*(.*)\s*$', re.IGNORECASE)
 
@@ -84,6 +83,7 @@ class ComicPDF(FPDF):
     def __init__(self, font_path: Optional[str] = None):
         super().__init__(orientation="P", unit="mm", format="A4"); self.set_margins(18, 18, 18)
         self.set_auto_page_break(auto=True, margin=20); self._font_family = "helvetica"; self._init_fonts(font_path)
+    
     def _init_fonts(self, font_path: Optional[str]):
         base_dir = os.path.dirname(font_path) if (font_path and os.path.isfile(font_path)) else "/usr/share/fonts/truetype/dejavu"
         try:
@@ -91,10 +91,13 @@ class ComicPDF(FPDF):
             if os.path.isfile(reg): self.add_font("DejaVu", style="", fname=reg); self._font_family = "DejaVu"
             if os.path.isfile(bold): self.add_font("DejaVu", style="B", fname=bold)
         except Exception as e: print(f"[AVISO] No se pudieron cargar fuentes DejaVu: {e}")
+
     def header_title(self, title: str):
         self.set_font(self._font_family, 'B', 24); self.set_text_color(40, 40, 40); self.multi_cell(0, 12, title, align="C"); self.ln(5); self.set_text_color(0, 0, 0); self.set_font(self._font_family, '', 11)
+
     def footer(self):
         self.set_y(-15); self.set_font(self._font_family, '', 9); self.set_text_color(150, 150, 150); self.cell(0, 10, f'Página {self.page_no()}', align='C')
+
     def _pil_to_temp_jpg(self, img: Image.Image, w_mm: float):
         iw, ih = img.size; h_mm = w_mm * (ih / iw) if iw else w_mm
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
@@ -151,7 +154,8 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
                 if img:
                     pdf.flow_paragraph_with_image(blocks[idx+1].text, img, side=side)
                     side = "left" if side == "right" else "right"
-            else:
+                    time.sleep(1) # Pausa para no saturar la API
+            else: # Imagen sola
                 img = obtener_imagen(b.text, cache_dir)
                 if img:
                     w = pdf.w - pdf.l_margin - pdf.r_margin; y = pdf.get_y()
@@ -178,8 +182,11 @@ def generar_pdf_de_md(md_path: str, input_folder: str, output_folder: str, font_
     print(f"✅ PDF generado: {output_pdf}")
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--input-folder", default="historias"); parser.add_argument("--output-folder", default="pdfs_generados")
+    parser = argparse.ArgumentParser(); 
+    parser.add_argument("--input-folder", default="historias"); 
+    parser.add_argument("--output-folder", default="pdfs_generados")
     args = parser.parse_args()
+    
     font_path = os.getenv("FONT_PATH")
     md_files = [os.path.join(root, f) for root, _, files in os.walk(args.input_folder) for f in files if f.lower().endswith(".md")]
     print(f"📄 MD a procesar: {len(md_files)}")
@@ -190,6 +197,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
