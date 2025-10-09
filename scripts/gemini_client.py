@@ -4,27 +4,27 @@ import os
 import sys
 import google.generativeai as genai
 from PIL import Image
-import io
+from io import BytesIO
 import pathlib
 
-# --- CONFIGURACIÓN DE LA API DE GEMINI (SIMPLE Y DIRECTA) ---
-
+# --- CONFIGURACIÓN DE LA API DE GOOGLE ---
+# Basado en la configuración final que confirmamos que funciona.
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 if not GOOGLE_API_KEY:
-    print("🚨 ERROR FATAL: No se encontró la variable de entorno GOOGLE_API_KEY en el entorno de ejecución.")
-    print("   Por favor, asegúrate de que tu archivo .github/workflows/main.yml contiene el bloque 'env:' para pasar el secret.")
+    print("🚨 ERROR FATAL: No se encontró la variable de entorno GOOGLE_API_KEY.")
+    print("   Asegúrate de que tu archivo .github/workflows/main.yml contiene el bloque 'env:' para pasar el secret.")
     sys.exit(1)
 
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    print("✅ Cliente de Gemini configurado correctamente con la clave proporcionada.")
+    print("✅ Cliente de Google AI configurado correctamente.")
 except Exception as e:
     print(f"🚨 ERROR: La clave de API parece ser inválida. Error de Google: {e}")
     sys.exit(1)
 
 
-# --- FUNCIÓN PARA GENERAR IMÁGENES ---
+# --- FUNCIÓN PARA GENERAR IMÁGENES (BASADA EN TU EJEMPLO) ---
 
 def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
     """
@@ -33,21 +33,34 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
     print(f"🎨 Enviando prompt a Gemini: '{prompt[:90]}...'")
     
     try:
-        # --- INICIO DE LA CORRECCIÓN FINAL ---
-        # Usamos 'gemini-pro-vision', el modelo multimodal estándar y estable
-        # diseñado para entender y generar contenido a partir de texto e imágenes.
-        model = genai.GenerativeModel('gemini-2.5-flash-lite')
-        # --- FIN DE LA CORRECCIÓN FINAL ---
+        # --- INICIO DE LA LÓGICA CORRECTA (GRACIAS A TU EJEMPLO) ---
+
+        # 1. Usamos un modelo específico para imágenes, como en tu ejemplo.
+        #    'gemini-1.5-flash' es una opción robusta y rápida.
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        full_prompt = f"Genera una ilustración digital para un libro educativo de matemáticas para adolescentes. La escena debe representar: {prompt}. Estilo claro, colores vivos, sin texto, firmas ni marcas de agua."
+        # 2. Creamos un prompt detallado para guiar al modelo.
+        full_prompt = f"Genera una ilustración digital de alta calidad para un libro educativo de matemáticas para adolescentes. La escena debe representar claramente: {prompt}. El estilo debe ser limpio, con colores vivos y atractivos. Es crucial que no contenga ningún tipo de texto, letras, firmas ni marcas de agua."
+
+        # 3. Hacemos la llamada a `generate_content`.
+        response = model.generate_content(full_prompt)
+
+        # 4. Procesamos la respuesta de forma segura, como en tu ejemplo.
+        #    Buscamos la parte que contiene los datos de la imagen.
+        image_data = None
+        for part in response.candidates[0].content.parts:
+            if part.inline_data:
+                image_data = part.inline_data.data
+                break
         
-        response = model.generate_content(
-            full_prompt,
-            generation_config={"candidate_count": 1}
-        )
+        if not image_data:
+            # Si no se encuentra una imagen, es un error.
+            error_text = response.text or "La respuesta de la API no contenía una imagen."
+            raise ValueError(f"No se pudo generar la imagen. Respuesta: {error_text}")
+
+        image = Image.open(BytesIO(image_data))
         
-        image_data = response.parts[0].inline_data.data
-        image = Image.open(io.BytesIO(image_data))
+        # --- FIN DE LA LÓGICA CORRECTA ---
         
         pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
         out_path = str(pathlib.Path(out_dir, f"img_{os.urandom(8).hex()}.png"))
@@ -57,5 +70,5 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
         return out_path
 
     except Exception as e:
-        print(f"🚨 ERROR al generar imagen con Gemini. Respuesta de la API: {getattr(e, 'response', e)}")
+        print(f"🚨 ERROR al generar imagen con Gemini. Error: {e}")
         raise ConnectionError(f"Fallo en la API de Gemini: {e}")
