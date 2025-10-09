@@ -37,7 +37,7 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
 
         # 1. Usamos un modelo específico para imágenes, como en tu ejemplo.
         #    'gemini-1.5-flash' es una opción robusta y rápida.
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-image')
         
         # 2. Creamos un prompt detallado para guiar al modelo.
         full_prompt = f"Genera una ilustración digital de alta calidad para un libro educativo de matemáticas para adolescentes. La escena debe representar claramente: {prompt}. El estilo debe ser limpio, con colores vivos y atractivos. Es crucial que no contenga ningún tipo de texto, letras, firmas ni marcas de agua."
