@@ -22,12 +22,12 @@ for p in (HERE, PARENT):
         sys.path.insert(0, str(p))
 
 try:
-    # Usamos el nuevo cliente de Gemini
+    # Usamos el nuevo y correcto cliente de Gemini
     from gemini_client import generate_image_with_gemini
 except ModuleNotFoundError:
     from scripts.gemini_client import generate_image_with_gemini
 
-# --- Parser ---
+# --- Parser (sin cambios) ---
 HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
 PROMPT_RE = re.compile(r'^\s*!\[prompt\]\s*(.*)\s*$', re.IGNORECASE)
 
