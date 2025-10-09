@@ -36,7 +36,7 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
         # --- INICIO DE LA CORRECCIÓN FINAL ---
         # Usamos 'gemini-pro-vision', el modelo multimodal estándar y estable
         # diseñado para entender y generar contenido a partir de texto e imágenes.
-        model = genai.GenerativeModel('gemini-pro-vision')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
         # --- FIN DE LA CORRECCIÓN FINAL ---
         
         full_prompt = f"Genera una ilustración digital para un libro educativo de matemáticas para adolescentes. La escena debe representar: {prompt}. Estilo claro, colores vivos, sin texto, firmas ni marcas de agua."
