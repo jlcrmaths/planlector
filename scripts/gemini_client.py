@@ -35,10 +35,13 @@ def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
     print(f"🎨 Enviando prompt a Gemini: '{prompt[:90]}...'")
     
     try:
-        # Usamos un modelo estable y de alta calidad
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        # --- INICIO DE LA CORRECCIÓN FINAL ---
+        # Usamos el modelo 'gemini-1.5-pro-latest', que es el modelo multimodal
+        # más potente y estable que soporta la generación de contenido de esta manera.
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        # --- FIN DE LA CORRECCIÓN FINAL ---
         
-        full_prompt = f"Una ilustración digital para un libro educativo de matemáticas para adolescentes. La escena debe representar: {prompt}. Estilo claro, colores vivos, sin texto, firmas ni marcas de agua."
+        full_prompt = f"Genera una ilustración digital para un libro educativo de matemáticas para adolescentes. La escena debe representar: {prompt}. Estilo claro, colores vivos, sin texto, firmas ni marcas de agua."
         
         response = model.generate_content(
             full_prompt,
