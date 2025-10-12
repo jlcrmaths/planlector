@@ -1,268 +1,272 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Generación de imágenes con Google Gemini con reintentos, backoff exponencial y CLI.
+generar_pdfs_comic.py
+
+Genera uno o varios PDFs a partir de imágenes (cómics, historias, tiras).
+- Acepta --input-folder y --output-folder (con alias).
+- Modos: auto | per-subfolder | per-folder
+- Ordenación natural por defecto (01, 02, 10...).
 
 Requisitos:
-- python >= 3.8
-- pip install google-generativeai pillow
-- Variable de entorno: GOOGLE_API_KEY
+    pip install pillow
 
-Notas:
-- El nombre del modelo debe corresponder a uno que admita salida de imagen en tu cuenta.
-- Por defecto se usa "gemini-2.5-flash-image" (cámbialo con --model o GOOGLE_GEMINI_MODEL).
+Ejemplos:
+    # Auto: si hay subcarpetas, un PDF por subcarpeta; si no, un único PDF
+    python generar_pdfs_comic.py --input-folder historias --output-folder pdfs_generados
 
-Uso rápido:
-    export GOOGLE_API_KEY="tu_clave"
-    python gemini_image_gen.py --prompt "una clase de matemáticas con estudiantes y una pizarra" --out-dir imagenes --format PNG
+    # Un PDF por subcarpeta explícitamente
+    python generar_pdfs_comic.py --input-folder historias --output-folder pdfs --mode per-subfolder
 
-Parámetros CLI:
-    --prompt        Descripción de la imagen a generar (str)
-    --out-dir       Directorio de salida (str, por defecto: imagenes_test)
-    --model         Nombre del modelo (str, por defecto: env GOOGLE_GEMINI_MODEL o 'gemini-2.5-flash-image')
-    --format        Formato de salida [PNG|JPEG|WEBP] (str, por defecto: PNG)
-    --max-retries   Reintentos máximos (int, por defecto: 8)
-    --min-delay     Espera mínima entre llamadas, en segundos (float, por defecto: 6.0)
-    --max-delay     Espera máxima entre llamadas, en segundos (float, por defecto: 9.0)
-    --seed          Semilla opcional (int)
-
-Salida:
-    Imprime por stdout la ruta del archivo generado y registra eventos con logging.
-
+    # Un único PDF con TODAS las imágenes (recursivo)
+    python generar_pdfs_comic.py --input-folder historias --output-folder pdfs --mode per-folder --recursive --output-name todo_en_uno.pdf
 """
 
+import argparse
+import logging
 import os
 import sys
-import time
-import base64
-import random
-import logging
-import argparse
-from io import BytesIO
-from typing import Optional
 from pathlib import Path
+from typing import List, Iterable, Tuple
+import re
 from PIL import Image
 
-import google.generativeai as genai
 
-# ---------------------------------
+# ---------------------------
 # Logging
-# ---------------------------------
+# ---------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     datefmt="%H:%M:%S",
 )
-log = logging.getLogger("gemini-image-gen")
+log = logging.getLogger("generar_pdfs_comic")
 
 
-# ---------------------------------
-# Utilidades de extracción
-# ---------------------------------
-def _extract_image_bytes(response) -> Optional[bytes]:
-    """Extrae los bytes de imagen de la respuesta del SDK.
-    Recorre candidates -> content -> parts -> inline_data.data, decodifica Base64 si procede.
-    Devuelve None si no encuentra binarios.
+# ---------------------------
+# Utilidades
+# ---------------------------
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def natural_key(s: str):
     """
-    try:
-        candidates = getattr(response, "candidates", None) or []
-        for cand in candidates:
-            content = getattr(cand, "content", None)
-            parts = getattr(content, "parts", None) or []
-            for part in parts:
-                inline = getattr(part, "inline_data", None)
-                if not inline:
-                    continue
-                data = getattr(inline, "data", None)
-                if not data:
-                    continue
-                if isinstance(data, str):
-                    try:
-                        return base64.b64decode(data)
-                    except Exception:
-                        # Fallback raro: intentar bytes directos
-                        try:
-                            return data.encode("latin1")
-                        except Exception:
-                            pass
-                elif isinstance(data, (bytes, bytearray)):
-                    return bytes(data)
-        return None
-    except Exception:
-        return None
-
-
-# ---------------------------------
-# Función principal
-# ---------------------------------
-def generate_image_with_gemini(
-    prompt: str,
-    out_dir: str = "imagenes",
-    model_name: str = None,
-    out_format: str = "PNG",  # PNG | JPEG | WEBP
-    max_retries: int = 8,
-    min_delay_s: float = 6.0,
-    max_delay_s: float = 9.0,
-    seed: Optional[int] = None,
-) -> str:
-    """Genera una imagen con Gemini respetando límites de cuota con backoff y jitter.
-
-    Parameters
-    ----------
-    prompt : str
-        Descripción de la escena/ilustración a generar.
-    out_dir : str
-        Directorio de salida.
-    model_name : str
-        Nombre del modelo con capacidad de imagen. Si None, usa env GOOGLE_GEMINI_MODEL
-        o el valor por defecto "gemini-2.5-flash-image".
-    out_format : str
-        Formato de salida: "PNG" (por defecto), "JPEG" o "WEBP".
-    max_retries : int
-        Reintentos ante errores transitorios (429/503, etc.).
-    min_delay_s, max_delay_s : float
-        Ventana de espera aleatoria entre llamadas para respetar RPM.
-    seed : Optional[int]
-        Semilla opcional (si el modelo la respeta por prompt; no garantizado).
-
-    Returns
-    -------
-    str
-        Ruta del archivo de imagen generado.
+    Clave de ordenación natural: divide cadenas en bloques [texto|número].
+    'page10.png' > ['page', 10, '.png']
     """
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"([0-9]+)", s)]
 
-    # Validar API key
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise EnvironmentError("Falta GOOGLE_API_KEY en el entorno.")
 
-    # Configurar SDK
-    try:
-        genai.configure(api_key=api_key)
-    except Exception as e:
-        raise RuntimeError(f"No se pudo configurar Google Generative AI: {e}")
+def iter_image_files(folder: Path, pattern: str, recursive: bool) -> Iterable[Path]:
+    """
+    Itera imágenes en 'folder' respetando el patrón (varios separados por ';').
+    """
+    patterns = [p.strip() for p in pattern.split(";") if p.strip()]
+    if not patterns:
+        patterns = ["*"]
 
-    # Modelo
-    model_name = (
-        model_name
-        or os.environ.get("GOOGLE_GEMINI_MODEL")
-        or "gemini-2.5-flash-image"
-    )
+    for pat in patterns:
+        if recursive:
+            yield from folder.rglob(pat)
+        else:
+            yield from folder.glob(pat)
 
-    # Validar formato
-    of = out_format.upper().strip()
-    if of not in {"PNG", "JPEG", "WEBP"}:
-        raise ValueError("out_format debe ser PNG, JPEG o WEBP")
 
-    # Preparar salida
-    out_dir_path = Path(out_dir)
-    out_dir_path.mkdir(parents=True, exist_ok=True)
-    out_path = str(out_dir_path / f"img_{os.urandom(8).hex()}.{of.lower()}")
+def collect_images(folder: Path, pattern: str, recursive: bool) -> List[Path]:
+    """
+    Devuelve lista de rutas de imagen válidas (por extensión), sin duplicados, existentes.
+    """
+    seen = set()
+    files = []
+    for p in iter_image_files(folder, pattern, recursive):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in IMAGE_EXTS:
+            continue
+        rp = p.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        files.append(rp)
+    return files
 
-    # Instanciar modelo
-    model = genai.GenerativeModel(model_name)
 
-    # Prompt compuesto
-    guidelines = (
-        "Genera una ilustración digital con estilo limpio y colores equilibrados. "
-        "Evita logotipos, marcas de agua y texto embebido."
-    )
-    if seed is not None:
-        guidelines += f" Mantén una composición coherente (seed sugerida: {seed})."
-    full_prompt = f"{guidelines} Debe representar: {prompt}".strip()
+def sort_images(files: List[Path], how: str = "natural") -> List[Path]:
+    """
+    Ordena la lista de imágenes por:
+      - 'natural' (por defecto): por nombre con ordenación natural
+      - 'name': por nombre simple (lexicográfico)
+      - 'mtime': por fecha de modificación
+    """
+    if how == "natural":
+        return sorted(files, key=lambda p: natural_key(p.name))
+    if how == "name":
+        return sorted(files, key=lambda p: p.name.lower())
+    if how == "mtime":
+        return sorted(files, key=lambda p: p.stat().st_mtime)
+    return files
 
-    # Reintentos con backoff exponencial + jitter
-    for attempt in range(1, max_retries + 1):
-        delay = random.uniform(min_delay_s, max_delay_s)
-        log.info(f"Esperando {delay:.1f}s antes del intento {attempt}…")
-        time.sleep(delay)
 
+def save_as_pdf(images: List[Path], out_pdf: Path) -> None:
+    """
+    Guarda una lista de imágenes en un PDF de varias páginas.
+    Convierte todo a RGB para evitar problemas con transparencias.
+    """
+    if not images:
+        raise ValueError("No hay imágenes para exportar.")
+
+    pil_images = []
+    for idx, img_path in enumerate(images):
         try:
-            log.info(f"Solicitando imagen a '{model_name}' (intento {attempt})…")
-            response = model.generate_content(full_prompt)
-
-            img_bytes = _extract_image_bytes(response)
-            if not img_bytes:
-                raise ValueError("La respuesta no contenía datos de imagen válidos (inline_data).")
-
-            # Guardado con Pillow
-            with Image.open(BytesIO(img_bytes)) as im:
-                # Normalización de modos
-                if of == "JPEG" and im.mode in ("RGBA", "LA"):
-                    im = im.convert("RGB")
-                elif im.mode not in ("RGB", "RGBA"):
-                    im = im.convert("RGB")
-                im.save(out_path, of)
-
-            log.info(f"Imagen generada correctamente: {out_path}")
-            return out_path
-
+            im = Image.open(img_path)
+            if im.mode in ("RGBA", "LA"):
+                im = im.convert("RGB")
+            elif im.mode not in ("RGB", "L"):
+                # Normalizamos a RGB
+                im = im.convert("RGB")
+            # Importante: Pillow requiere que la primera imagen sea distinta de las append_images
+            pil_images.append(im)
         except Exception as e:
-            err_text = str(e).lower()
-            is_quota = ("429" in err_text) or ("quota" in err_text) or ("resourceexhausted" in err_text)
-            is_unavail = ("503" in err_text) or ("temporarily" in err_text) or ("service unavailable" in err_text)
+            raise RuntimeError(f"Error abriendo {img_path}: {e}") from e
 
-            if is_quota or is_unavail:
-                backoff = min(5 * (2 ** (attempt - 1)), 300)  # 5s, 10s, 20s, ... máx 300s
-                kind = "Cuota excedida" if is_quota else "Servicio no disponible"
-                log.warning(f"{kind}. Reintentando en {backoff}s… (intento {attempt}/{max_retries})")
-                time.sleep(backoff)
-                continue
-
-            log.error(f"Error inesperado en intento {attempt}: {e}")
-            if attempt == max_retries:
-                raise
-            time.sleep(10)
-
-    raise RuntimeError("No se pudo generar la imagen tras múltiples intentos.")
+    first, rest = pil_images[0], pil_images[1:]
+    out_pdf.parent.mkdir(parents=True, exist_ok=True)
+    first.save(out_pdf, "PDF", resolution=300.0, save_all=True, append_images=rest)
 
 
-# ---------------------------------
+def make_pdf_name_from_folder(folder: Path) -> str:
+    """
+    Crea un nombre de PDF a partir del nombre de la carpeta.
+    """
+    base = folder.name.strip() or "salida"
+    return f"{base}.pdf"
+
+
+def find_immediate_subfolders(folder: Path) -> List[Path]:
+    return sorted([p for p in folder.iterdir() if p.is_dir()], key=lambda p: natural_key(p.name))
+
+
+# ---------------------------
 # CLI
-# ---------------------------------
-def _build_cli() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Genera una imagen con Google Gemini.")
-    p.add_argument("--prompt", required=False, default="una escena sencilla de ejemplo",
-                   help="Descripción de la imagen a generar.")
-    p.add_argument("--out-dir", default="imagenes_test", help="Directorio de salida.")
-    p.add_argument("--model", dest="model_name", default=None,
-                   help="Nombre del modelo (por defecto: env GOOGLE_GEMINI_MODEL o 'gemini-2.5-flash-image').")
-    p.add_argument("--format", dest="out_format", default="PNG", choices=["PNG", "JPEG", "WEBP"],
-                   help="Formato de la imagen de salida.")
-    p.add_argument("--max-retries", type=int, default=8, help="Reintentos máximos.")
-    p.add_argument("--min-delay", dest="min_delay_s", type=float, default=6.0,
-                   help="Espera mínima entre llamadas (s).")
-    p.add_argument("--max-delay", dest="max_delay_s", type=float, default=9.0,
-                   help="Espera máxima entre llamadas (s).")
-    p.add_argument("--seed", type=int, default=None, help="Semilla (opcional).")
+# ---------------------------
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Genera PDFs a partir de imágenes (un PDF por carpeta o por subcarpeta)."
+    )
+    # Aliases para compatibilidad: --input-folder / --input_dir / --in / -i
+    p.add_argument(
+        "--input-folder", "--input_dir", "--in", "-i",
+        dest="input_folder",
+        required=True,
+        help="Carpeta de entrada con imágenes y/o subcarpetas.",
+    )
+    # Aliases: --output-folder / --output_dir / --out / -o
+    p.add_argument(
+        "--output-folder", "--output_dir", "--out", "-o",
+        dest="output_folder",
+        required=True,
+        help="Carpeta de salida para los PDFs generados.",
+    )
+    p.add_argument(
+        "--mode",
+        choices=["auto", "per-subfolder", "per-folder"],
+        default="auto",
+        help="Modo de generación: auto (por defecto), per-subfolder (un PDF por subcarpeta), per-folder (un único PDF).",
+    )
+    p.add_argument(
+        "--recursive",
+        action="store_true",
+        help="Si se usa con per-folder, busca imágenes recursivamente.",
+    )
+    p.add_argument(
+        "--pattern",
+        default="*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.tif;*.tiff",
+        help="Patrón(es) glob separados por ';' para seleccionar imágenes.",
+    )
+    p.add_argument(
+        "--sort",
+        choices=["natural", "name", "mtime"],
+        default="natural",
+        help="Orden de páginas: natural (def), name o mtime.",
+    )
+    p.add_argument(
+        "--output-name",
+        default=None,
+        help="Nombre del PDF de salida (solo aplica en modo per-folder o cuando no hay subcarpetas).",
+    )
     return p
 
 
-def main():
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        log.error("Falta GOOGLE_API_KEY. Exporta la variable de entorno antes de ejecutar.")
-        sys.exit(1)
+def main() -> int:
+    parser = build_parser()
+    try:
+        args = parser.parse_args()
+    except SystemExit as e:
+        # Mantiene el comportamiento de argparse pero permite que CI vea el exit code
+        return e.code
 
-    args = _build_cli().parse_args()
+    in_dir = Path(args.input_folder).resolve()
+    out_dir = Path(args.output_folder).resolve()
+
+    if not in_dir.exists() or not in_dir.is_dir():
+        log.error(f"La carpeta de entrada no existe o no es un directorio: {in_dir}")
+        return 2
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    mode = args.mode
+    subfolders = find_immediate_subfolders(in_dir)
+
+    if mode == "auto":
+        mode = "per-subfolder" if subfolders else "per-folder"
+
+    log.info(f"Modo: {mode}")
+    log.info(f"Entrada: {in_dir}")
+    log.info(f"Salida:  {out_dir}")
 
     try:
-        path = generate_image_with_gemini(
-            prompt=args.prompt,
-            out_dir=args.out_dir,
-            model_name=args.model_name,
-            out_format=args.out_format,
-            max_retries=args.max_retries,
-            min_delay_s=args.min_delay_s,
-            max_delay_s=args.max_delay_s,
-            seed=args.seed,
-        )
-        print(path)
-    except Exception:
-        log.exception("Fallo en la generación de imagen")
-        sys.exit(2)
+        if mode == "per-subfolder":
+            if not subfolders:
+                log.warning("No se encontraron subcarpetas; no hay nada que procesar en 'per-subfolder'.")
+                return 0
+
+            total = 0
+            for sf in subfolders:
+                imgs = sort_images(collect_images(sf, args.pattern, recursive=False), args.sort)
+                if not imgs:
+                    log.warning(f"[{sf.name}] Sin imágenes válidas, se omite.")
+                    continue
+                pdf_name = make_pdf_name_from_folder(sf)
+                out_pdf = out_dir / pdf_name
+                log.info(f"[{sf.name}] {len(imgs)} imágenes -> {out_pdf.name}")
+                save_as_pdf(imgs, out_pdf)
+                total += 1
+
+            log.info(f"Listo. PDFs generados: {total}")
+            return 0
+
+        elif mode == "per-folder":
+            imgs = sort_images(collect_images(in_dir, args.pattern, recursive=args.recursive), args.sort)
+            if not imgs:
+                log.error("No se encontraron imágenes en la carpeta de entrada.")
+                return 2
+
+            pdf_name = args.output_name or make_pdf_name_from_folder(in_dir)
+            out_pdf = out_dir / pdf_name
+            log.info(f"{len(imgs)} imágenes -> {out_pdf.name}")
+            save_as_pdf(imgs, out_pdf)
+            log.info("Listo.")
+            return 0
+
+        else:
+            log.error(f"Modo no reconocido: {mode}")
+            return 2
+
+    except Exception as e:
+        log.exception(f"Fallo durante la generación de PDFs: {e}")
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
 
