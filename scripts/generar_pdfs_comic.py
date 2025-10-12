@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
@@ -60,10 +61,11 @@ def parse_markdown(text: str) -> Tuple[List[Block], str]:
 
 
 def clean_inline_md(s: str) -> str:
+    """Elimina formato MD y fuerza salto tras a), b), c)"""
     s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
     s = re.sub(r'__(.+?)__', r'\1', s)
     s = re.sub(r'\s*\n\s*', ' ', s)
-    s = re.sub(r'([a-zA-Z])\)', r'\1)\n', s)  # fuerza salto tras a), b), c)
+    s = re.sub(r'([a-zA-Z])\)', r'\1)\n', s)
     return re.sub(r'\s{2,}', ' ', s).strip()
 
 
@@ -72,7 +74,7 @@ def clean_inline_md(s: str) -> str:
 def generate_image_with_gemini(prompt: str, out_dir: str, name_hint: str) -> str:
     """Genera imagen con resolución moderada (512x512) y la guarda en caché."""
     os.makedirs(out_dir, exist_ok=True)
-    cache_file = os.path.join(out_dir, f"{name_hint}.png")
+    cache_file = os.path.join(out_dir, f"{name_hint}.jpg")
     if os.path.exists(cache_file):
         print(f"🖼️  Imagen en caché: {cache_file}")
         return cache_file
@@ -80,7 +82,7 @@ def generate_image_with_gemini(prompt: str, out_dir: str, name_hint: str) -> str
     print(f"🎨 Generando imagen para '{prompt[:60]}...'")
 
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash-image")
+        model = genai.GenerativeModel("gemini-2.5-flash-preview-image")
         response = model.generate_content(
             f"Ilustración educativa 512x512 px sin texto ni marcas. Tema: {prompt}"
         )
@@ -94,10 +96,8 @@ def generate_image_with_gemini(prompt: str, out_dir: str, name_hint: str) -> str
         if not image_data:
             raise ValueError("La respuesta no contiene imagen válida.")
 
-        img = Image.open(tempfile.SpooledTemporaryFile())
-        img = Image.open(tempfile.SpooledTemporaryFile())
-        img = Image.open(BytesIO(image_data))
-        img.save(cache_file, "PNG")
+        image = Image.open(BytesIO(image_data))
+        image.convert("RGB").save(cache_file, "JPEG", quality=85)
         print(f"✅ Imagen guardada: {cache_file}")
         time.sleep(2)
         return cache_file
@@ -126,9 +126,6 @@ class RetoPDF(FPDF):
         except Exception as e:
             print(f"[AVISO] No se pudo cargar fuente DejaVu: {e}")
 
-    def header(self):
-        pass
-
     def footer(self):
         self.set_y(-15)
         self.set_font(self._font_family, "", 10)
@@ -144,6 +141,7 @@ class RetoPDF(FPDF):
         self.set_font(self._font_family, "", 12)
 
     def flow_text_with_image(self, text: str, img_path: str, side: str):
+        """Coloca imagen lateral y texto adaptado."""
         img_w_mm = 70
         gutter = 8
         line_h = 6
@@ -183,6 +181,7 @@ def generar_pdf_optimizado(md_path: str, input_folder: str, output_folder: str, 
     reto_idx = 0
     side = "right"
     current_text = ""
+
     for idx, b in enumerate(blocks):
         if b.type == "h2" and "reto" in b.text.lower():
             if current_text:
