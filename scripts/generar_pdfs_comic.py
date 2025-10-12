@@ -4,112 +4,73 @@ import os
 import re
 import sys
 import time
-import tempfile
+import pathlib
 from io import BytesIO
-from pathlib import Path
-from typing import List, Tuple, Optional
-from dataclasses import dataclass
+from PIL import Image
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
-from PIL import Image
 import google.generativeai as genai
+
 
 # --- CONFIGURACIÓN DE GOOGLE GEMINI ---
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 if not GOOGLE_API_KEY:
     print("🚨 ERROR FATAL: No se encontró la variable de entorno GOOGLE_API_KEY.")
-    print("   Asegúrate de definirla antes de ejecutar este script, por ejemplo:")
-    print("   export GOOGLE_API_KEY='tu_clave_real_de_gemini'")
     sys.exit(1)
 
 try:
     genai.configure(api_key=GOOGLE_API_KEY)
-    print("✅ Cliente de Google Gemini configurado correctamente.")
+    print("✅ Cliente de Google AI configurado correctamente.")
 except Exception as e:
-    print(f"🚨 ERROR: La clave de API parece inválida o la conexión falló.\n   Detalles: {e}")
+    print(f"🚨 ERROR: La clave de API parece ser inválida. Detalles: {e}")
     sys.exit(1)
 
 
-# --- FUNCIONES AUXILIARES ---
-
-@dataclass
-class Block:
-    type: str
-    text: str
-
-
-HEADING_RE = re.compile(r'^\s*(#{1,6})\s+(.*)\s*$')
-
-def parse_markdown(text: str) -> Tuple[List[Block], str]:
-    lines = text.splitlines()
-    blocks: List[Block] = []
-    title_h1: Optional[str] = None
-
-    for line in lines:
-        m_heading = HEADING_RE.match(line)
-        if m_heading:
-            level = len(m_heading.group(1))
-            heading_text = m_heading.group(2).strip()
-            if level == 1 and not title_h1:
-                title_h1 = heading_text
-            blocks.append(Block(f"h{level}", heading_text))
-        elif line.strip():
-            blocks.append(Block("p", line.strip()))
-
-    return blocks, (title_h1 or "Documento sin título")
-
-
-def clean_inline_md(s: str) -> str:
-    """Elimina formato MD y fuerza salto tras a), b), c)"""
-    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
-    s = re.sub(r'__(.+?)__', r'\1', s)
-    s = re.sub(r'\s*\n\s*', ' ', s)
-    s = re.sub(r'([a-zA-Z])\)', r'\1)\n', s)
-    return re.sub(r'\s{2,}', ' ', s).strip()
-
-
-# --- GENERACIÓN DE IMÁGENES ---
-
-def generate_image_with_gemini(prompt: str, out_dir: str, name_hint: str) -> str:
-    """Genera imagen con resolución moderada (512x512) y la guarda en caché."""
-    os.makedirs(out_dir, exist_ok=True)
-    cache_file = os.path.join(out_dir, f"{name_hint}.jpg")
-    if os.path.exists(cache_file):
-        print(f"🖼️  Imagen en caché: {cache_file}")
-        return cache_file
-
-    print(f"🎨 Generando imagen para '{prompt[:60]}...'")
-
+# --- FUNCIÓN DE GENERACIÓN DE IMÁGENES ---
+def generate_image_with_gemini(prompt: str, out_dir: str) -> str:
+    """Genera imagen educativa con Gemini."""
+    print(f"🎨 Enviando prompt a Gemini: '{prompt[:80]}...'")
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash-preview-image")
-        response = model.generate_content(
-            f"Ilustración educativa 512x512 px sin texto ni marcas. Tema: {prompt}"
+        model = genai.GenerativeModel('gemini-2.5-flash-preview-image')
+        full_prompt = (
+            f"Genera una ilustración digital educativa y colorida sobre: {prompt}. "
+            "Debe ser apropiada para adolescentes, con estilo limpio y sin texto ni marcas de agua."
         )
+        response = model.generate_content(full_prompt)
 
         image_data = None
         for part in response.candidates[0].content.parts:
-            if hasattr(part, "inline_data") and part.inline_data:
+            if part.inline_data:
                 image_data = part.inline_data.data
                 break
 
         if not image_data:
-            raise ValueError("La respuesta no contiene imagen válida.")
+            raise ValueError("La respuesta no contenía una imagen válida.")
 
         image = Image.open(BytesIO(image_data))
-        image.convert("RGB").save(cache_file, "JPEG", quality=85)
-        print(f"✅ Imagen guardada: {cache_file}")
-        time.sleep(2)
-        return cache_file
-
+        pathlib.Path(out_dir).mkdir(parents=True, exist_ok=True)
+        out_path = str(pathlib.Path(out_dir, f"img_{os.urandom(8).hex()}.png"))
+        image.convert("RGB").save(out_path, "PNG")
+        print(f"🖼️ Imagen guardada en: {out_path}")
+        return out_path
     except Exception as e:
-        print(f"🚨 ERROR al generar imagen con Gemini: {e}")
+        print(f"🚨 ERROR al generar imagen con Gemini. Error: {e}")
         raise
 
 
-# --- CLASE PDF ---
+# --- LIMPIADOR DE TEXTO ---
+def clean_inline_md(s: str) -> str:
+    """Quita formato MD y separa apartados a), b), c)."""
+    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+    s = re.sub(r'__(.+?)__', r'\1', s)
+    s = re.sub(r'\s*\n\s*', ' ', s)
+    s = re.sub(r'([a-zA-Z]\))', r'\1\n', s)
+    return re.sub(r'\s{2,}', ' ', s).strip()
 
-class RetoPDF(FPDF):
+
+# --- CLASE PDF CON MAQUETACIÓN MEJORADA ---
+class EducativoPDF(FPDF):
     def __init__(self):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.set_margins(20, 20, 20)
@@ -124,7 +85,7 @@ class RetoPDF(FPDF):
             self.add_font("DejaVu", "B", os.path.join(base_dir, "DejaVuSans-Bold.ttf"))
             print("✅ Fuente DejaVu cargada.")
         except Exception as e:
-            print(f"[AVISO] No se pudo cargar fuente DejaVu: {e}")
+            print(f"[AVISO] No se pudo cargar DejaVu: {e}")
 
     def footer(self):
         self.set_y(-15)
@@ -135,13 +96,13 @@ class RetoPDF(FPDF):
     def titulo(self, text: str):
         self.set_font(self._font_family, "B", 22)
         self.set_text_color(0, 102, 204)
-        self.cell(0, 15, text, align="C", new_y=YPos.NEXT)
-        self.ln(8)
+        self.multi_cell(0, 15, text, align="C")
+        self.ln(10)
         self.set_text_color(0, 0, 0)
         self.set_font(self._font_family, "", 12)
 
     def flow_text_with_image(self, text: str, img_path: str, side: str):
-        """Coloca imagen lateral y texto adaptado."""
+        """Coloca imagen a un lado y adapta el texto."""
         img_w_mm = 70
         gutter = 8
         line_h = 6
@@ -164,81 +125,39 @@ class RetoPDF(FPDF):
         self.set_xy(x_text, y_before)
         self.multi_cell(text_w, line_h, clean_inline_md(text), align="J")
 
-        self.set_y(max(y_before + img_h_mm, self.get_y()) + 8)
+        # Ajustar salto tras la imagen
+        self.set_y(max(y_before + img_h_mm, self.get_y()) + 6)
 
 
-# --- GENERACIÓN DEL PDF ---
-
-def generar_pdf_optimizado(md_path: str, input_folder: str, output_folder: str, cache_folder: str):
-    with open(md_path, "r", encoding="utf-8") as f:
-        text = f.read()
-
-    blocks, title = parse_markdown(text)
-    pdf = RetoPDF()
+# --- GENERADOR PRINCIPAL ---
+def generar_pdf_educativo(titulo: str, secciones: list, salida_pdf: str):
+    pdf = EducativoPDF()
     pdf.add_page()
-    pdf.titulo(title)
+    pdf.titulo(titulo)
 
-    reto_idx = 0
     side = "right"
-    current_text = ""
-
-    for idx, b in enumerate(blocks):
-        if b.type == "h2" and "reto" in b.text.lower():
-            if current_text:
-                img_path = generate_image_with_gemini(
-                    b.text, cache_folder, f"reto{reto_idx}"
-                )
-                pdf.flow_text_with_image(current_text, img_path, side)
-                reto_idx += 1
-                side = "left" if side == "right" else "right"
-                current_text = ""
-        elif b.type == "p":
-            current_text += b.text + "\n"
-
-    # último bloque
-    if current_text:
-        img_path = generate_image_with_gemini(
-            f"Reto final de {title}", cache_folder, f"reto{reto_idx}"
-        )
-        pdf.flow_text_with_image(current_text, img_path, side)
-
-    os.makedirs(output_folder, exist_ok=True)
-    output_pdf = os.path.join(output_folder, os.path.basename(md_path).replace(".md", ".pdf"))
-    pdf.output(output_pdf)
-    print(f"✅ PDF generado: {output_pdf}")
-
-
-# --- MAIN ---
-
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-folder", default="historias")
-    parser.add_argument("--output-folder", default="pdfs_generados")
-    parser.add_argument("--images-cache", default="imagenes_cache")
-    args = parser.parse_args()
-
-    os.makedirs(args.output_folder, exist_ok=True)
-    md_files = [os.path.join(root, f)
-                for root, _, files in os.walk(args.input_folder)
-                for f in files if f.lower().endswith(".md")]
-
-    print(f"📄 Archivos Markdown detectados: {len(md_files)}")
-
-    for md in sorted(md_files):
-        output_pdf = os.path.join(
-            args.output_folder, os.path.basename(md).replace(".md", ".pdf")
-        )
-        if os.path.exists(output_pdf):
-            print(f"⏭️  PDF ya existe, se omite: {output_pdf}")
-            continue
-        print(f"--- Procesando: {md} ---")
+    for idx, (texto, prompt) in enumerate(secciones):
         try:
-            generar_pdf_optimizado(md, args.input_folder, args.output_folder, args.images_cache)
+            img_path = generate_image_with_gemini(prompt, "imagenes_cache")
+            pdf.flow_text_with_image(texto, img_path, side)
+            side = "left" if side == "right" else "right"
+            time.sleep(1)
         except Exception as e:
-            print(f"❌ Error procesando {md}: {e}")
-            continue
+            print(f"⚠️ No se pudo generar la imagen para '{prompt}': {e}")
+            pdf.multi_cell(0, 6, clean_inline_md(texto), align="J")
+            pdf.ln(6)
+
+    pdf.output(salida_pdf)
+    print(f"✅ PDF generado: {salida_pdf}")
 
 
+# --- EJEMPLO DE USO ---
 if __name__ == "__main__":
-    main()
+    titulo = "Lectura 1: El origen de los números"
+    secciones = [
+        ("Reto 1: Investiga cómo las antiguas civilizaciones representaban los números.", "Reto 1: escritura numérica antigua, civilizaciones, piedra y símbolos"),
+        ("Reto 2: Explica por qué el cero fue un avance tan importante.", "Reto 2: símbolo del cero, matemáticas antiguas, representación visual educativa"),
+        ("Reto 3: Piensa cómo serían las matemáticas si no existiera el cero.", "Reto 3: educación matemática, ilustración conceptual sobre ausencia del cero"),
+        ("Reto 4: Crea un breve cómic sobre cómo nacieron los números.", "Reto 4: historieta educativa sobre el origen de los números"),
+    ]
+    generar_pdf_educativo(titulo, secciones, "pdfs_generados/1_reto_matematico.pdf")
